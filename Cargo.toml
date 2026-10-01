@@ -1,0 +1,5 @@
+# 根目录是一个 Cargo workspace，成员只有一个：src-tauri。
+# Rust 后端代码全部在 src-tauri/，前端静态文件在 src/。
+[workspace]
+members = ["src-tauri"]
+resolver = "2"

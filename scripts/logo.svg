@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- 圆角方形底色（应用图标底板，纯色填充以保证任何光栅化器都能正确渲染） -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#3B82F6"/>
+
+  <!-- 打开的书：左页 -->
+  <path d="M 252 132 L 150 132 Q 128 132 128 154 L 128 358 Q 128 380 150 380 L 252 380 Z" fill="#ffffff"/>
+  <!-- 打开的书：右页 -->
+  <path d="M 260 132 L 362 132 Q 384 132 384 154 L 384 358 Q 384 380 362 380 L 260 380 Z" fill="#ffffff"/>
+
+  <!-- 放大镜：镜片 / 镜框 / 手柄 -->
+  <circle cx="300" cy="292" r="50" fill="#DBEAFE"/>
+  <circle cx="300" cy="292" r="50" fill="none" stroke="#1E40AF" stroke-width="18"/>
+  <line x1="342" y1="334" x2="380" y2="372" stroke="#1E40AF" stroke-width="18" stroke-linecap="round"/>
+</svg>
