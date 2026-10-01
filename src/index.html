@@ -32,6 +32,7 @@
       <symbol id="icon-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-6h6v6"/></symbol>
       <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-8l-2-2z"/></symbol>
       <symbol id="icon-star" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></symbol>
+      <symbol id="icon-lock" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
     </svg>
 
     <header class="toolbar">
@@ -65,17 +66,17 @@
         <button id="btn-extract" class="icon-btn" title="提取文字" disabled><svg class="icon"><use href="#icon-extract-text"/></svg></button>
         <button id="btn-extract-pages" class="icon-btn" title="提取页面为 PDF" disabled><svg class="icon"><use href="#icon-extract-pages"/></svg></button>
         <button id="btn-translate" class="icon-btn" title="翻译选中文字" disabled><svg class="icon"><use href="#icon-translate"/></svg></button>
-        <button id="btn-export" class="icon-btn" title="导出文本" disabled><svg class="icon"><use href="#icon-export-text"/></svg></button>
+        <button id="btn-export" class="icon-btn" title="导出文本" disabled><svg class="icon"><use href="#icon-export-text"/></svg><svg class="icon lock-icon"><use href="#icon-lock"/></svg></button>
       </div>
 
       <span class="spacer"></span>
 
       <div class="tool-group main-actions">
         <button id="btn-export-word" class="btn btn-primary" disabled>
-          <svg class="icon"><use href="#icon-export-word"/></svg><span class="btn-text">导出 Word</span>
+          <svg class="icon"><use href="#icon-export-word"/></svg><svg class="icon lock-icon"><use href="#icon-lock"/></svg><span class="btn-text">导出 Word</span><span class="pro-badge">Pro</span>
         </button>
         <button id="btn-export-word-tr" class="btn btn-primary" disabled>
-          <svg class="icon"><use href="#icon-export-word-tr"/></svg><span class="btn-text">导出译文</span>
+          <svg class="icon"><use href="#icon-export-word-tr"/></svg><svg class="icon lock-icon"><use href="#icon-lock"/></svg><span class="btn-text">导出译文</span><span class="pro-badge">Pro</span>
         </button>
       </div>
 
@@ -212,10 +213,34 @@
             <option value="double">双栏（上下两栏）</option>
           </select>
         </label>
+        <section class="license-box">
+          <span class="h3-label"><svg class="icon"><use href="#icon-lock"/></svg>Pro 授权</span>
+          <p id="license-status" class="license-status">免费版</p>
+          <div class="license-row">
+            <input id="license-code" type="text" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" />
+            <button type="button" id="btn-activate" class="btn">激活</button>
+          </div>
+          <p class="hint">购买后 3 天内联网激活，绑定本机；导出 Word / 文本 / 译文为 Pro 版专属。</p>
+        </section>
         <p class="hint">源语言默认自动检测。大模型 OCR 需使用支持图片输入的视觉模型（如通义 VL、Kimi 视觉、GPT-4V、deepseek-v4-flash-vision-exp 等）。配置保存到 %APPDATA%/PDFReader/config.json。</p>
         <footer>
           <button type="submit"><svg class="icon"><use href="#icon-check"/></svg>保存</button>
           <button type="button" id="btn-cancel-cfg"><svg class="icon"><use href="#icon-close"/></svg>取消</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="activate">
+      <form id="activate-form">
+        <h2>激活 Pro</h2>
+        <p class="hint">导出 Word / 文本 / 译文为 Pro 版专属。输入激活码并联网激活（绑定本机，购买后 3 天内有效）。</p>
+        <label>激活码
+          <input id="activate-code" type="text" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" />
+        </label>
+        <p id="activate-msg" class="hint"></p>
+        <footer>
+          <button type="submit"><svg class="icon"><use href="#icon-check"/></svg>激活</button>
+          <button type="button" id="btn-cancel-activate"><svg class="icon"><use href="#icon-close"/></svg>取消</button>
         </footer>
       </form>
     </dialog>

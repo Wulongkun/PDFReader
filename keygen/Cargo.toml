@@ -1,0 +1,19 @@
+[package]
+name = "pdfreader-keygen"
+version = "0.1.0"
+edition = "2021"
+description = "PDFReader 激活码离线签发工具（只在卖家本机运行，绝不发布/上传）"
+
+# 独立小工具，不属于主 workspace（避免跟着 app 一起构建）。
+[workspace]
+
+[dependencies]
+ed25519-dalek = "2"
+data-encoding = "2"
+getrandom = "0.2"
+hmac = "0.12"
+sha2 = "0.10"
+anyhow = "1"
+eframe = "0.28"
+egui = "0.28"
+arboard = "3"

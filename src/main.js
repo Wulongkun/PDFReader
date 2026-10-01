@@ -24,6 +24,7 @@ const state = {
   zoomAnchor: null,       // 缩放锚点：#pdf-pages 本地坐标 + 当时布局倍率，重渲染后还原
   zoomAnchorClient: null, // 锚点在视口中的位置（跟随鼠标缩放）
   rtl: false,             // 竖排古籍阅读模式：页面水平从右往左连续排列（第 1 页在最右）
+  pro: false,             // 是否已激活 Pro（解锁导出三件套）
 };
 
 function setStatus(msg) { $('status').textContent = msg || ''; }
@@ -33,6 +34,94 @@ function setEnabled(ids, on) { ids.forEach((id) => { $(id).disabled = !on; }); }
 function logDiag(msg) {
   if (invoke) { try { invoke('log_diag', { msg: `[${Date.now() % 100000}] ${msg}` }); } catch { /* 忽略 */ } }
 }
+
+// ===== 授权（Pro 门控） =====
+
+// 把授权状态渲染到设置里的状态行（无状态参数时重新拉取）。
+function renderLicenseUi(s) {
+  const el = $('license-status');
+  if (el) {
+    if (s && s.pro) {
+      el.textContent = 'Pro 已激活' + (s.activated_at ? `（${new Date(s.activated_at * 1000).toLocaleDateString()}）` : '');
+    } else {
+      el.textContent = (s && s.message) ? s.message : '免费版';
+    }
+  }
+}
+
+// 从后端拉取授权状态，同步到 state.pro 与工具栏角标。
+async function refreshLicenseStatus() {
+  if (!invoke) return;
+  try {
+    const s = await invoke('get_license_status');
+    state.pro = !!(s && s.pro);
+    updateProBadges();
+    renderLicenseUi(s);
+    return s;
+  } catch { /* 拉取失败按免费处理 */ state.pro = false; updateProBadges(); return null; }
+}
+
+// 用激活码在线激活；成功返回 true，失败弹提示并返回 false。
+async function activateLicense(code) {
+  if (!invoke) return false;
+  try {
+    const s = await invoke('activate_license', { code });
+    if (s && s.pro) {
+      state.pro = true;
+      updateProBadges();
+      renderLicenseUi(s);
+      setStatus('激活成功，Pro 已解锁');
+      return true;
+    }
+    setStatus('激活失败：' + ((s && s.message) || '未知错误'));
+    return false;
+  } catch (err) {
+    setStatus('激活失败：' + err);
+    return false;
+  }
+}
+
+// 打开激活对话框（先填充已填过的激活码，便于用户续填）。
+function openActivate() {
+  const code = $('license-code') && $('license-code').value.trim();
+  if (code) $('activate-code').value = code;
+  $('activate-msg').textContent = '';
+  $('activate').showModal();
+}
+
+// 提交激活：读码 → 调后端 → 成功后关闭对话框。
+async function submitActivate() {
+  const code = $('activate-code').value.trim();
+  if (!code) { $('activate-msg').textContent = '请输入激活码'; return; }
+  $('activate-msg').textContent = '正在激活…';
+  const ok = await activateLicense(code);
+  if (ok) {
+    $('activate-msg').textContent = '';
+    if ($('license-code')) $('license-code').value = code;
+    $('activate').close();
+  } else {
+    $('activate-msg').textContent = $('status').textContent || '激活失败';
+  }
+}
+
+// Pro 门控：未激活时弹出激活框并返回 false；已激活直接返回 true。
+function requirePro() {
+  if (state.pro) return true;
+  setStatus('导出 Word / 文本 / 译文为 Pro 版专属，请先激活');
+  openActivate();
+  return false;
+}
+
+// 同步导出按钮上的 Pro 角标：已激活隐藏锁、加「Pro」徽标；未激活显示锁。
+function updateProBadges() {
+  ['btn-export', 'btn-export-word', 'btn-export-word-tr'].forEach((id) => {
+    const el = $(id);
+    if (!el) return;
+    el.classList.toggle('pro', state.pro);
+    el.classList.toggle('locked', !state.pro);
+  });
+}
+
 
 function dataUrlToBytes(dataUrl) {
   const b64 = dataUrl.split(',')[1];
@@ -2005,6 +2094,7 @@ async function exportPagesToPdf() {
 // 当 OCR 方式为「大模型 / GLM」时走云端版面解析（去公式、去页眉页脚、表格还原）。
 async function exportText() {
   if (!state.pdfDoc) return;
+  if (!requirePro()) return;
   const btn = $('btn-export');
   btn.disabled = true;
   try {
@@ -2123,6 +2213,7 @@ async function renderFormulaPng(latex) {
 // 插图以图片插入 Word。
 async function exportWord() {
   if (!state.pdfDoc) return;
+  if (!requirePro()) return;
   const btn = $('btn-export-word');
   btn.disabled = true;
   ocrRawDump = [];
@@ -2157,6 +2248,7 @@ async function exportWord() {
 // 流程，因此格式与导出的原文一致。
 async function exportWordTranslated() {
   if (!state.pdfDoc) return;
+  if (!requirePro()) return;
   const btn = $('btn-export-word-tr');
   btn.disabled = true;
   try {
@@ -2654,6 +2746,7 @@ async function openSettings() {
   $('cfg-ocr-vertical').checked = !!cfg.ocr.vertical;
   $('cfg-viewer-rtl').checked = !!(cfg.viewer && cfg.viewer.rtl);
   $('cfg-toc-position').value = (cfg.viewer && cfg.viewer.toc_position) || 'top';
+  await refreshLicenseStatus(); // 刷新 Pro 状态显示
   $('settings').showModal();
 }
 
@@ -3115,6 +3208,13 @@ function bindEvents() {
   $('btn-cancel-cfg').addEventListener('click', () => $('settings').close());
   $('extract-pages-form').addEventListener('submit', (e) => { e.preventDefault(); exportPagesToPdf(); });
   $('btn-cancel-extract').addEventListener('click', closeExtractPages);
+  $('activate-form').addEventListener('submit', (e) => { e.preventDefault(); submitActivate(); });
+  $('btn-cancel-activate').addEventListener('click', () => $('activate').close());
+  $('btn-activate').addEventListener('click', async () => {
+    const code = $('license-code').value.trim();
+    if (!code) { setStatus('请输入激活码'); return; }
+    await activateLicense(code);
+  });
 
   // Ctrl + 滚轮缩放（passive: false 才能 preventDefault 阻止页面滚动）。
   // 用 rAF 把快速连续滚动合并成一次缩放，并记录鼠标位置以便缩放时跟随鼠标。
@@ -3421,4 +3521,5 @@ function initToolbarOverflow() {
 bindEvents();
 initMaterialRipple();
 initToolbarOverflow();
+refreshLicenseStatus(); // 启动时拉取授权状态，填充 Pro 角标/锁
 showShelf();

@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod library;
+mod license;
 mod orientation;
 mod pdf;
 mod translate;
@@ -36,6 +37,8 @@ pub fn run() {
             ui::commands::translate_stream,
             ui::commands::get_config,
             ui::commands::set_config,
+            ui::commands::activate_license,
+            ui::commands::get_license_status,
             ui::commands::ocr_image,
             ui::commands::ocr_image_local,
             ui::commands::extract_page,

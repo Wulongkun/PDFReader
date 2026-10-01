@@ -13,6 +13,7 @@ pub struct Config {
     pub translate: TranslateConfig,
     pub ocr: OcrConfig,
     pub viewer: ViewerConfig,
+    pub license: LicenseConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,13 +59,31 @@ pub struct ViewerConfig {
     pub toc_position: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LicenseConfig {
+    /// 用户输入的激活码（仅回填展示用，真正的授权凭据是 `receipt`）。
+    pub code: String,
+    /// Worker 签发的激活票据（base64url 编码的 `payload ‖ 签名`）。
+    pub receipt: String,
+    /// 激活时绑定的机器指纹（Windows MachineGuid）。
+    pub machine_id: String,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             translate: TranslateConfig::default(),
             ocr: OcrConfig::default(),
             viewer: ViewerConfig::default(),
+            license: LicenseConfig::default(),
         }
+    }
+}
+
+impl Default for LicenseConfig {
+    fn default() -> Self {
+        Self { code: String::new(), receipt: String::new(), machine_id: String::new() }
     }
 }
 

@@ -8,3 +8,11 @@ dist/
 .DS_Store
 __pycache__/
 *.pyc
+
+# 授权私钥与 Worker 本地密钥（绝不上传）
+keygen/private.key
+keygen/*.key
+keygen/target/
+keygen/*.exe
+worker/.dev.vars
+worker/.wrangler/

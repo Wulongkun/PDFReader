@@ -10,6 +10,7 @@ use crate::{
     app::AppState,
     config::Config,
     library::{self, Library},
+    license,
     pdf::{extract, ocr, reader},
     translate::{ExtractedPage, TranslateRequest, TranslateResult},
 };
@@ -479,6 +480,83 @@ pub fn set_config(state: State<'_, AppState>, config: Config) -> Result<(), Stri
     Ok(())
 }
 
+/// 授权状态：前端据此显示「免费 / Pro」与激活提示。
+#[derive(serde::Serialize)]
+pub struct LicenseStatus {
+    pub pro: bool,
+    pub edition: String,
+    pub activated_at: Option<i64>,
+    pub message: String,
+}
+
+/// 返回当前授权状态（全离线：本地验票据签名 + 核对机器指纹）。
+#[tauri::command]
+pub fn get_license_status(state: State<'_, AppState>) -> Result<LicenseStatus, String> {
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
+    let mid = license::machine_id().unwrap_or_default();
+    if config.license.receipt.trim().is_empty() {
+        return Ok(LicenseStatus {
+            pro: false,
+            edition: "free".to_string(),
+            activated_at: None,
+            message: "免费版：导出 Word / 文本 / 译文需激活 Pro".to_string(),
+        });
+    }
+    match license::verify_receipt(&config.license.receipt, &mid) {
+        Ok(p) => Ok(LicenseStatus {
+            pro: true,
+            edition: p.edition,
+            activated_at: Some(p.activated_at),
+            message: "已激活 Pro".to_string(),
+        }),
+        Err(e) => Ok(LicenseStatus {
+            pro: false,
+            edition: "free".to_string(),
+            activated_at: None,
+            message: format!("授权无效：{e}"),
+        }),
+    }
+}
+
+/// 用激活码在线激活：本地预检 → Worker 验签 + 判窗口 → 存票据。
+#[tauri::command]
+pub async fn activate_license(
+    state: State<'_, AppState>,
+    code: String,
+) -> Result<LicenseStatus, String> {
+    // 本地先验格式，明显打错就不浪费一次网络请求（真伪由 Worker 判）。
+    license::validate_code(&code)?;
+    let mid = license::machine_id()?;
+    let receipt = license::activate_online(&code, &mid).await?;
+    // Worker 返回的票据必须验签通过且绑定本机，才落盘。
+    let payload = license::verify_receipt(&receipt, &mid)?;
+
+    {
+        let mut guard = state.config.lock().map_err(|e| e.to_string())?;
+        guard.license.code = code;
+        guard.license.receipt = receipt;
+        guard.license.machine_id = mid;
+        guard.save().map_err(|e| e.to_string())?;
+    }
+
+    Ok(LicenseStatus {
+        pro: true,
+        edition: payload.edition,
+        activated_at: Some(payload.activated_at),
+        message: "已激活 Pro".to_string(),
+    })
+}
+
+/// Pro 门控：导出类命令在入口处调用，未激活直接拒绝。
+fn require_pro(state: &State<'_, AppState>) -> Result<(), String> {
+    let config = state.config.lock().map_err(|e| e.to_string())?;
+    if license::is_pro(&config) {
+        Ok(())
+    } else {
+        Err("本功能为 Pro 版专属，请先在设置中激活".to_string())
+    }
+}
+
 /// `ocr_image` 的参数：一张页面的 PNG data URL。
 #[derive(serde::Deserialize)]
 pub struct OcrRequest {
@@ -578,7 +656,11 @@ pub struct ExportRequest {
 
 /// 弹出保存对话框，把文本写入 `.txt` 文件，返回保存路径。
 #[tauri::command]
-pub async fn export_text(request: ExportRequest) -> Result<String, String> {
+pub async fn export_text(
+    state: State<'_, AppState>,
+    request: ExportRequest,
+) -> Result<String, String> {
+    require_pro(&state)?;
     let handle = rfd::AsyncFileDialog::new()
         .add_filter("文本文件", &["txt"])
         .set_file_name(&request.suggested_name)
@@ -687,6 +769,8 @@ pub async fn translate_paragraphs(
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::task::JoinSet;
+
+    require_pro(&state)?;
 
     let (cfg, translator) = {
         let guard = state.config.lock().map_err(|e| e.to_string())?;
@@ -870,12 +954,17 @@ async fn translate_protecting_math(
 /// 转成 MathType OLE 对象（ProgID `Equation.DSMT4`，内含 MTEF 二进制）嵌入文档，
 /// 并附带一张前端 MathJax 渲染的 PNG 预览，使 Word 在未装 MathType 时也能正确显示。
 #[tauri::command]
-pub async fn export_docx(request: ExportDocxRequest) -> Result<String, String> {
+pub async fn export_docx(
+    state: State<'_, AppState>,
+    request: ExportDocxRequest,
+) -> Result<String, String> {
     use docx_rs::{
         AlignmentType, Docx, LineSpacing, Paragraph, Pic, Run, Style, StyleType, Table, TableCell,
         TableRow,
     };
     use crate::translate::latex::{self, MathSegment};
+
+    require_pro(&state)?;
 
     let handle = rfd::AsyncFileDialog::new()
         .add_filter("Word 文档", &["docx"])
