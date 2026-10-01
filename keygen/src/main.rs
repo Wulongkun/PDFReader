@@ -32,8 +32,36 @@ struct App {
     confirm_regen: bool,
 }
 
+/// 加载系统中文字体作为兜底，否则中文会显示成方框（egui 默认字体不含 CJK）。
+fn install_cjk_font(ctx: &egui::Context) {
+    let candidates = [
+        r"C:\Windows\Fonts\msyh.ttc",   // 微软雅黑（Windows 默认界面字体）
+        r"C:\Windows\Fonts\simhei.ttf", // 黑体
+        r"C:\Windows\Fonts\Deng.ttf",   // 等线
+        r"C:\Windows\Fonts\simsun.ttc", // 宋体
+    ];
+    for path in candidates {
+        let Ok(bytes) = std::fs::read(path) else { continue };
+        let mut fonts = egui::FontDefinitions::default();
+        fonts
+            .font_data
+            .insert("cjk".to_owned(), egui::FontData::from_owned(bytes));
+        // 追加到字体族末尾作兜底：拉丁字符仍用 egui 默认字体，缺字时才落到中文字体。
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts
+                .families
+                .entry(family)
+                .or_default()
+                .push("cjk".to_owned());
+        }
+        ctx.set_fonts(fonts);
+        return;
+    }
+}
+
 impl App {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        install_cjk_font(&cc.egui_ctx);
         let mut app = Self {
             seed: None,
             public_hex: String::new(),
