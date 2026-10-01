@@ -2,3 +2,6 @@
 # 目标机器无需安装 Visual C++ Redistributable 即可运行。
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
