@@ -24,12 +24,38 @@ const state = {
   zoomAnchor: null,       // 缩放锚点：鼠标下的页 + 页内分数(0..1)，缩放时保持该 PDF 点不动
   zoomAnchorClient: null, // 锚点在视口中的位置（跟随鼠标缩放）
   rtl: false,             // 竖排古籍阅读模式：页面水平从右往左连续排列（第 1 页在最右）
+  detected: null,         // 排版方向自动检测结果：true=竖排 / false=横排 / null=未识别
   pro: false,             // 是否已激活 Pro（解锁导出三件套）
   sidebarPinned: false,   // 悬浮翻译栏是否固定（固定后点击 PDF 画布不收起）
 };
 
-function setStatus(msg) { $('status').textContent = msg || ''; }
+function setStatus(msg) {
+  $('status-text').textContent = msg || '';
+  $('status').classList.toggle('hidden', !msg);
+}
 function setEnabled(ids, on) { ids.forEach((id) => { $(id).disabled = !on; }); }
+
+// 排版方向自动检测结果 → 短标签（竖排/横排/未识别），用于竖排无书签目录的提示位。
+function orientationLabel() {
+  if (state.detected === true) return '竖排';
+  if (state.detected === false) return '横排';
+  return '未识别';
+}
+
+// 竖排浮动目录里的翻译进度条：翻译全文导出时后端逐段上报 { done, total }。
+function setTocProgress(done, total) {
+  const wrap = $('toc-progress');
+  if (!wrap) return;
+  const fill = wrap.querySelector('.toc-progress-fill');
+  const percent = total > 0 ? Math.round(done / total * 100) : 0;
+  if (percent <= 0 || percent >= 100) {
+    wrap.style.display = 'none';
+    if (fill) fill.style.height = '0%';
+    return;
+  }
+  wrap.style.display = '';
+  if (fill) fill.style.height = percent + '%';
+}
 
 // 追踪布局/缩放问题：把关键状态写入 diag.log（带时间戳，便于看先后顺序）。
 function logDiag(msg) {
@@ -101,7 +127,7 @@ async function submitActivate() {
     if ($('license-code')) $('license-code').value = code;
     $('activate').close();
   } else {
-    $('activate-msg').textContent = $('status').textContent || '激活失败';
+    $('activate-msg').textContent = $('status-text').textContent || '激活失败';
   }
 }
 
@@ -175,6 +201,7 @@ function dataUrlToBytes(dataUrl) {
       const p = e.payload;
       if (p && typeof p.done === 'number' && typeof p.total === 'number') {
         setStatus(`正在翻译全文… ${p.done}/${p.total}`);
+        setTocProgress(p.done, p.total);
       }
     });
   }
@@ -427,6 +454,7 @@ const MANUAL_PATH = '__内置使用手册__';
 async function openManual() {
   try {
     $('settings').close();
+    showViewer();
     setStatus('正在打开用户手册…');
     const resp = await fetch('manual.pdf');
     if (!resp.ok) throw new Error('手册资源缺失（HTTP ' + resp.status + '）');
@@ -440,6 +468,9 @@ async function openManual() {
 // 加载并渲染一份 PDF：二进制读取 → PDF.js 解析 → 方向检测 → 重建页面。
 // 由 openPdf（对话框）与 openBook（书架点击）共用。
 async function loadPdfDocument(path, name) {
+  // 立即切到阅读器并提示，避免停留在书架等待读取/解析（大文件打开时界面看似卡住）。
+  showViewer();
+  setStatus('正在打开…');
   // 二进制读取（ArrayBuffer），避免 base64 往返——大扫描件打开更快。
   const bytes = await invoke('read_pdf', { path });
   await loadPdfData(new Uint8Array(bytes), path, name);
@@ -477,10 +508,16 @@ async function loadPdfData(data, path, name) {
   // 判断横排/竖排：优先用本地缓存，未命中再现场检测（文本层旋转 + 扫描件投影），并写回缓存。
   const detected = await resolveOrientation(path, state.pdfDoc);
   state.rtl = detected === true;
+  state.detected = detected; // 保留检测结果，供目录无书签时展示「检测到什么排版」
   $('pdf-pages').classList.toggle('rtl', state.rtl);
   document.body.classList.toggle('rtl', state.rtl); // 竖排时目录/翻译栏左右互换
   await applyTocPosition(); // 应用竖排目录位置（top/left）
   resetSidebarLayout(); // 新文档：清理悬浮翻译栏的固定/展开状态，回到干净初始态
+  // 新文档默认进入阅读模式（隐藏翻译栏、画布占满宽度）。它与初始「翻译栏收起」的
+  // 视觉一致，同时保证第一次点「阅读模式」能立即退出阅读模式并弹出翻译栏——
+  // 否则首次进入时按钮未点亮、点一下只重复了「收起」而无可见变化。
+  document.body.classList.add('reading');
+  $('btn-reading').classList.add('active');
   // 竖排按高度适应、横排按宽度适应，按钮提示随排版方向切换。
   $('btn-fit').title = state.rtl ? '适应高度' : '适应宽度';
 
@@ -2605,6 +2642,7 @@ async function exportWordTranslated() {
     setStatus('导出失败：' + err);
   } finally {
     btn.disabled = false;
+    setTocProgress(0, 1); // 翻译结束（无论成败）收起目录里的进度条
   }
 }
 
@@ -2991,6 +3029,8 @@ async function openToc() {
     } else {
       $('toc-generate').style.display = '';
       $('toc-hint').style.display = '';
+      // 竖排浮动目录：不显示「无书签」提示，改为显示检测到的排版方向；横排保留原提示。
+      $('toc-hint').textContent = state.rtl ? orientationLabel() : '本文档没有书签目录';
       list.innerHTML = '<div class="toc-hint">本文档没有书签目录。</div>';
     }
   }
@@ -3259,10 +3299,15 @@ function showShelf() {
   renderShelf();
 }
 function showViewer() {
+  const wasShelf = document.body.classList.contains('shelf-mode');
   document.body.classList.remove('shelf-mode');
-  const m = document.querySelector('main');
-  if (m) { m.classList.remove('view-in'); void m.offsetWidth; m.classList.add('view-in'); }
-  thumbQueue.length = 0; // 丢弃待生成封面（卡片即将重建），避免与正文加载抢资源
+  // 仅在「书架 → 阅读器」切换时重放进场动画并丢弃封面队列；已在阅读器内则幂等，
+  // 避免打开文档时（loadPdfDocument 提前切视图 + loadPdfData 再次调用）重复触发动画。
+  if (wasShelf) {
+    const m = document.querySelector('main');
+    if (m) { m.classList.remove('view-in'); void m.offsetWidth; m.classList.add('view-in'); }
+    thumbQueue.length = 0; // 丢弃待生成封面（卡片即将重建），避免与正文加载抢资源
+  }
 }
 
 // 书架顶部的临时提示（工具栏状态栏在书架模式下隐藏，错误须在此显示）。
@@ -3597,16 +3642,10 @@ function bindEvents() {
   $('btn-next').addEventListener('click', () => goTo(state.pageNum + 1));
   $('page-input').addEventListener('change', (e) => goTo(Number(e.target.value)));
 
-  // 记住鼠标在阅读区内最后停留的位置，让「放大/缩小」按钮也以该点为中心缩放（与 Ctrl+滚轮一致），
-  // 而不是总以视口中心缩放——鼠标指向的内容尽量保持不变。
-  let viewPointer = { x: null, y: null };
-  $('viewer').addEventListener('pointermove', (e) => {
-    viewPointer.x = e.clientX;
-    viewPointer.y = e.clientY;
-  });
-
-  $('btn-zoom-out').addEventListener('click', () => zoom(1 / 1.25, viewPointer.x, viewPointer.y));
-  $('btn-zoom-in').addEventListener('click', () => zoom(1.25, viewPointer.x, viewPointer.y));
+  // 点菜单栏「放大/缩小」按钮时以视口中心为缩放锚点（zoom 的 clientX/Y 传 null 即取中心），
+  // 而 Ctrl+滚轮仍跟随鼠标位置缩放——按钮缩放不依赖鼠标当前指向，两类操作手感区分开。
+  $('btn-zoom-out').addEventListener('click', () => zoom(1 / 1.25));
+  $('btn-zoom-in').addEventListener('click', () => zoom(1.25));
   $('btn-fit').addEventListener('click', fitWidth);
   $('btn-extract').addEventListener('click', extractText);
   $('btn-extract-pages').addEventListener('click', openExtractPages);
@@ -3617,6 +3656,7 @@ function bindEvents() {
   $('btn-copy').addEventListener('click', copyTranslation);
   $('btn-settings').addEventListener('click', openSettings);
   $('btn-shelf-settings').addEventListener('click', openSettings);
+  $('btn-status-close').addEventListener('click', () => $('status').classList.add('hidden'));
   $('btn-reading').addEventListener('click', toggleReadingMode);
   $('btn-toc').addEventListener('click', toggleToc);
   $('toc-generate').addEventListener('click', generateToc);
@@ -3874,8 +3914,12 @@ function initToolbarOverflow() {
   }
 
   // 工具栏内容是否超出：取最右子元素右缘，与内容区右界比较。
+  // 状态徽章（#status）在非阅读模式下是绝对定位浮层，其 rect 会伸进右侧预留区，
+  // 若纳入会误判为「溢出」而把所有按钮收进「更多」，这里显式排除。
   function overflowing() {
-    const rects = [...toolbar.children].map((c) => c.getBoundingClientRect());
+    const rects = [...toolbar.children]
+      .filter((c) => c.id !== 'status')
+      .map((c) => c.getBoundingClientRect());
     if (!rects.length) return false;
     const right = Math.max(...rects.map((r) => r.right));
     const tb = toolbar.getBoundingClientRect();

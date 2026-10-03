@@ -110,13 +110,20 @@ input, textarea, select, [contenteditable] { user-select: text; }
 .toolbar .icon-btn:hover:not(:disabled) { background: #eef2ff; border-color: transparent; color: var(--accent); }
 .toolbar .icon-btn:active:not(:disabled) { transform: scale(0.92); }
 
-/* 主要功能：打开 PDF（描边强调） */
+/* 主要功能：打开 PDF（实心渐变主按钮，醒目） */
 .toolbar .btn-open {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: transparent;
+  color: #fff;
   font-weight: 600;
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  box-shadow: 0 2px 6px rgba(59, 130, 246, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
-.toolbar .btn-open:hover:not(:disabled) { background: #eef2ff; }
+.toolbar .btn-open:hover:not(:disabled) {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--accent-hover), #1d4ed8);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.45);
+  transform: translateY(-1px);
+}
 
 /* 主要功能：导出 Word / 导出译文 Word（实心强调） */
 .toolbar .btn-primary {
@@ -141,26 +148,66 @@ input, textarea, select, [contenteditable] { user-select: text; }
 #page-total { font-size: 12px; color: var(--text-muted); flex: none; white-space: nowrap; }
 #zoom-info { font-size: 12px; min-width: 36px; text-align: center; color: #475569; }
 .status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-left: 8px;
   font-size: 12px;
   line-height: 1.25;
   color: #475569;
-  /* 提示做成圆角小框：白底 + 细边框 + 淡阴影，像一枚轻量的状态徽章。 */
+  /* 提示做成圆角胶囊：白底 + 细边框 + 淡阴影，像一枚轻量的状态徽章。 */
   background: #fff;
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 4px 12px;
+  padding: 3px 5px 3px 12px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
   /* 自然宽度优先完整显示；放不下时收缩并省略。max-width 兜底，避免长路径把框撑得过宽。 */
   flex: 0 1 auto;
   min-width: 0;
   max-width: 460px;
+}
+/* 无内容时隐藏（关闭按钮始终存在，故改用 .hidden 而非 :empty 判断）。 */
+.status.hidden { display: none; }
+/* 提示文字：收缩时省略号，右侧关闭按钮始终可见。 */
+.status-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
-/* 空内容时隐藏，避免常驻一个空的小框。 */
-.status:empty { display: none; }
+/* 关闭按钮：小圆点，hover 才显色，保持徽章轻量。
+   用 .status .status-close 提高特异性，覆盖 .toolbar button 的通用按钮样式。 */
+.status .status-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  flex: none;
+  transition: background 0.14s, color 0.14s;
+}
+.status .status-close:hover { background: #eef2ff; color: var(--accent); }
+.status .status-close .icon { width: 11px; height: 11px; }
+
+/* 非阅读模式（翻译栏展开、工具栏右侧为其预留 380px）时，提示浮到设置按钮旁的预留区、
+   靠左紧挨设置按钮：翻译栏其实在工具栏下方，并不遮挡提示，此前却被这段预留宽度挤成 "…"。
+   浮起后按预留区宽度显示完整文本，仅在真放不下时才省略。
+   overflowing() 会排除该绝对定位元素，故不会因它把按钮误收进「更多」。 */
+body:not(.reading):not(.rtl) .status,
+body.rtl.toc-left:not(.reading) .status {
+  position: absolute;
+  left: calc(100% - var(--sidebar-w) - 20px + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 0;
+  max-width: calc(var(--sidebar-w) - 28px);
+}
 
 main { flex: 1; display: flex; min-height: 0; overflow: hidden; }
 
@@ -521,7 +568,10 @@ body.rtl #toc-panel {
   width: auto;
   min-width: 0;
   margin: 0;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  /* 与悬浮翻译栏、工具栏一致：玻璃 + 单条内侧分界边（顶部横条为下边），不做四边围合，
+     避免目录栏是「四边相框」而翻译栏是「单边玻璃」的割裂感。 */
+  border: none;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.85);
   box-shadow: 0 16px 48px rgba(15, 23, 42, 0.24);
   overflow: hidden;
 }
@@ -708,6 +758,72 @@ body.rtl.toc-double .toc-pager {
 /* 竖排浮动目录（顶部/双栏）：右下角 X 收起按钮无用（点击空白/PDF 即可收起），隐藏 */
 body.rtl.toc-top #btn-toc-collapse,
 body.rtl.toc-double #btn-toc-collapse { display: none; }
+
+/* 竖排浮动目录（顶部/双栏）无书签时：提示与「从标题生成目录」按钮不参与条目拉伸，
+   绝对定位到面板中央、横排紧凑显示——否则会被 flex 交叉轴 stretch 成占满面板高度的巨大竖长框。 */
+body.rtl.toc-top #toc-list .toc-hint,
+body.rtl.toc-double #toc-list .toc-hint { display: none; }
+/* 竖排无书签：提示与按钮文字竖排，放在「目录」标题正下方、靠右，从上往下排（提示在上、按钮在下）。
+   两者同宽（26px，与「目录」列一致）并各自水平居中内容，保证提示与按钮同轴对齐。 */
+body.rtl.toc-top #toc-hint,
+body.rtl.toc-double #toc-hint {
+  position: absolute;
+  right: 8px;
+  top: 66px;
+  z-index: 23;
+  margin: 0;
+  width: 26px;
+  display: flex;
+  align-items: center;      /* 竖排下交叉轴=水平，水平居中 */
+  justify-content: center;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+body.rtl.toc-top .toc-generate,
+body.rtl.toc-double .toc-generate {
+  position: absolute;
+  right: 8px;
+  bottom: 40px;
+  z-index: 23;
+  margin: 0;
+  width: 26px;
+  justify-content: center;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  padding: 10px 3px;
+}
+/* 竖排按钮图标缩小、宽度收敛到与「目录」标题列一致，不超出侧栏范围。 */
+body.rtl.toc-top .toc-generate .icon,
+body.rtl.toc-double .toc-generate .icon {
+  width: 13px;
+  height: 13px;
+}
+
+/* 竖排无书签：翻译全文时的竖条进度条，与上方排版提示、下方生成按钮同列居中（右 8px 处 26px 列的中心）。 */
+.toc-progress { display: none; }
+body.rtl.toc-top .toc-progress,
+body.rtl.toc-double .toc-progress {
+  display: block;
+  position: absolute;
+  right: 19px;              /* 26px 列中心（8 + 26/2 = 21）向左偏移条宽一半 2px */
+  top: 128px;
+  width: 4px;
+  height: 110px;
+  border-radius: 2px;
+  background: rgba(226, 232, 240, 0.8);
+  overflow: hidden;
+  z-index: 23;
+}
+.toc-progress-fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 0%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: height 0.15s ease;
+}
 
 /* 悬浮翻译栏展开时，顶部/双栏目录右移让出左侧位置（翻译栏为浮层，收起时目录贴左）。 */
 body.rtl.toc-top.sidebar-open #toc-panel { left: var(--sidebar-w); }
@@ -916,10 +1032,22 @@ body.shelf-mode main { display: none; }
   transition: background 0.12s, border-color 0.12s;
 }
 .shelf-header button:hover { background: var(--hover); border-color: var(--accent); }
-.shelf-header .btn-open { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.shelf-header .btn-open {
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  box-shadow: 0 2px 6px rgba(59, 130, 246, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transition: background 0.14s, box-shadow 0.14s, transform 0.14s;
+}
 .shelf-header .shelf-settings { padding: 6px 8px; }
 .shelf-header .shelf-settings .icon { width: 18px; height: 18px; }
-.shelf-header .btn-open:hover { background: #eef2ff; }
+.shelf-header .btn-open:hover {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--accent-hover), #1d4ed8);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.45);
+  transform: translateY(-1px);
+}
 
 .shelf-body { flex: 1; overflow: auto; padding: 20px 24px 32px; }
 .shelf-section { margin-bottom: 28px; }

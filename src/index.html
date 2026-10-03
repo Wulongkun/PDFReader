@@ -90,7 +90,10 @@
         <div id="overflow-menu" class="overflow-menu" role="menu"></div>
       </div>
       <button id="btn-settings" class="icon-btn" title="设置"><svg class="icon"><use href="#icon-settings"/></svg></button>
-      <span id="status" class="status"></span>
+      <span id="status" class="status hidden">
+        <span id="status-text" class="status-text"></span>
+        <button id="btn-status-close" type="button" class="status-close" title="关闭提示" aria-label="关闭提示"><svg class="icon"><use href="#icon-close"/></svg></button>
+      </span>
     </header>
 
     <div id="bookshelf">
@@ -133,7 +136,8 @@
           <span id="toc-page-info">1 / 1</span>
           <button id="toc-page-next" type="button" title="下一页"><svg class="icon"><use href="#icon-next"/></svg></button>
         </div>
-        <p id="toc-hint" class="toc-hint" style="display:none">本文档没有书签目录，可从正文标题自动生成。</p>
+        <p id="toc-hint" class="toc-hint" style="display:none">竖排</p>
+        <div id="toc-progress" class="toc-progress" style="display:none"><div class="toc-progress-fill"></div></div>
         <button id="toc-generate" class="toc-generate" style="display:none"><svg class="icon"><use href="#icon-toc"/></svg>从标题生成目录</button>
       </aside>
       <div id="viewer">
