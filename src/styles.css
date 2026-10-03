@@ -37,7 +37,13 @@ body {
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* 屏蔽整页文字选中：应用像原生桌面程序一样，不能像网页那样拖选文本。 */
+  user-select: none;
 }
+
+/* 表单控件与侧栏输出文本（原文/译文）仍可选中、复制。 */
+input, textarea, select, [contenteditable] { user-select: text; }
+.content { user-select: text; }
 
 /* 内联 SVG 图标：线性风格（stroke=currentColor），随按钮文字颜色变化 */
 .icon {
@@ -137,17 +143,24 @@ body {
 .status {
   margin-left: 8px;
   font-size: 12px;
-  color: #64748b;
-  /* 不再写死 max-width：状态文字优先按自然宽度完整显示，只有真正放不下（工具栏被撑满）
-     时才收缩省略，避免「明明还有位置却仍被 … 截断」。min-width:0 允许 flex 项收缩到
-     内容宽度以下，从而触发 text-overflow: ellipsis。 */
+  line-height: 1.25;
+  color: #475569;
+  /* 提示做成圆角小框：白底 + 细边框 + 淡阴影，像一枚轻量的状态徽章。 */
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  /* 自然宽度优先完整显示；放不下时收缩并省略。max-width 兜底，避免长路径把框撑得过宽。 */
   flex: 0 1 auto;
   min-width: 0;
-  max-width: 100%;
+  max-width: 460px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 空内容时隐藏，避免常驻一个空的小框。 */
+.status:empty { display: none; }
 
 main { flex: 1; display: flex; min-height: 0; overflow: hidden; }
 
@@ -331,6 +344,7 @@ dialog form {
   overscroll-behavior: contain;
 }
 dialog h2 { margin: 0 0 2px; font-size: 17px; font-weight: 700; }
+dialog h2.drag-handle { cursor: move; user-select: none; }
 dialog label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
 dialog input, dialog select {
   padding: 8px 10px;
@@ -442,20 +456,17 @@ dialog button[type="submit"]:hover { background: #2563eb; border-color: #2563eb;
   forced-color-adjust: none;
   transform-origin: 0 0;
   z-index: 1;
+  /* 屏蔽文字选中：不再拦截鼠标（选中/复制不可用），指针事件穿透到下方画布，
+     拖拽平移等交互不受影响。 */
+  pointer-events: none;
+  user-select: none;
 }
 .text-layer span,
 .text-layer br {
   color: transparent;
   position: absolute;
   white-space: pre;
-  cursor: text;
   transform-origin: 0% 0%;
-}
-.text-layer ::selection {
-  background: rgba(0, 90, 255, 0.3);
-}
-.text-layer br::selection {
-  background: transparent;
 }
 
 /* ===== Material 风格：按钮点击水波纹（点击点向外扩散的圆形涟漪） ===== */
@@ -519,13 +530,13 @@ body.rtl #toc-panel.collapsed { margin-left: 0; margin-right: 0; border-width: 0
 /* ===== 目录位置：顶部（横条，文字竖排自右往左；「目录」+ X 竖排在右侧） ===== */
 body.rtl.toc-top #toc-panel {
   top: 0;
-  left: var(--sidebar-w);
+  left: 0;
   right: 0;
   /* 高度可用 --toc-height 覆盖（拖拽调节），默认 16 个汉字 + 头部/页码/边距 */
   height: var(--toc-height, calc(16 * 13px * 1.4 + 112px));
   flex-direction: row;   /* 条目在左、头部「目录」在右 */
   border-radius: 0 0 14px 14px;
-  transition: transform 0.25s ease;
+  transition: transform 0.25s ease, left 0.25s ease;
 }
 body.rtl.toc-top #toc-panel.collapsed { transform: translateX(100%); }
 
@@ -606,12 +617,12 @@ body.rtl.toc-left .toc-page { flex-shrink: 0; font-size: 12px; }
 /* ===== 目录位置：双栏（全高，先上后下两栏，分页，向右收起，滚轮/按钮翻页） ===== */
 body.rtl.toc-double #toc-panel {
   top: 0;
-  left: var(--sidebar-w);
+  left: 0;
   right: 0;
   height: 100%;
   flex-direction: row;   /* 条目页在左、头部「目录」在右 */
   border-radius: 0;
-  transition: transform 0.25s ease;
+  transition: transform 0.25s ease, left 0.25s ease;
 }
 body.rtl.toc-double #toc-panel.collapsed { transform: translateX(100%); }
 body.rtl.toc-double .toc-head {
@@ -698,9 +709,9 @@ body.rtl.toc-double .toc-pager {
 body.rtl.toc-top #btn-toc-collapse,
 body.rtl.toc-double #btn-toc-collapse { display: none; }
 
-/* 阅读模式：翻译栏隐藏，悬浮目录贴左缘（左侧位置为普通面板，无需贴左） */
-body.rtl.toc-top.reading #toc-panel { left: 0; }
-body.rtl.toc-double.reading #toc-panel { left: 0; }
+/* 悬浮翻译栏展开时，顶部/双栏目录右移让出左侧位置（翻译栏为浮层，收起时目录贴左）。 */
+body.rtl.toc-top.sidebar-open #toc-panel { left: var(--sidebar-w); }
+body.rtl.toc-double.sidebar-open #toc-panel { left: var(--sidebar-w); }
 
 /* 目录高度拖拽调节把手（仅顶部位置） */
 .toc-resize {
@@ -723,6 +734,67 @@ body.rtl.reading .toolbar {
 /* 左侧位置与横排一致（翻译栏在右），工具栏右侧要为翻译栏留白 */
 body.rtl.toc-left .toolbar { padding-right: calc(var(--sidebar-w) + 20px); }
 body.rtl.toc-left.reading .toolbar { padding-right: 20px; }
+
+/* ===== 悬浮翻译栏（竖排 + 顶部/双栏目录）：绝对定位浮在 PDF 上，展开/收起不改画布尺寸 ===== */
+
+/* 顶部/双栏目录时，翻译栏不再参与布局，从左缘浮出（与目录悬浮风格一致）。 */
+body.rtl:not(.toc-left) #sidebar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 18;
+  border-left: none;
+  border-right: 1px solid rgba(226, 232, 240, 0.85);
+  border-radius: 0 14px 14px 0;
+  box-shadow: 0 16px 48px rgba(15, 23, 42, 0.24);
+  /* 收起/展开用位移而非宽度，避免 viewer 重排引发画布重渲染 */
+  transition: transform 0.25s ease;
+}
+/* 收起：整体滑出左缘（宽度保持，仅移出视野）。 */
+body.rtl:not(.toc-left) #sidebar.collapsed {
+  width: var(--sidebar-w);
+  transform: translateX(-100%);
+  border-right-color: transparent;
+  box-shadow: none;
+}
+/* 阅读模式下悬浮翻译栏也不 display:none，仍由 collapsed 控制显隐，从而能正常弹出。 */
+body.rtl:not(.toc-left).reading #sidebar { display: flex; }
+
+/* 悬浮翻译栏头部（标题 + 固定 + 收起），仅悬浮态显示；横排/左侧目录保持原样。 */
+.sidebar-head {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  background: rgba(248, 250, 252, 0.6);
+  border-bottom: 1px solid rgba(226, 232, 240, 0.6);
+  flex-shrink: 0;
+}
+body.rtl:not(.toc-left) .sidebar-head { display: flex; }
+.sidebar-head .icon { width: 15px; height: 15px; }
+.sidebar-actions { display: inline-flex; align-items: center; gap: 2px; }
+.sidebar-head button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #475569;
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+}
+.sidebar-head button:hover { background: #eef2ff; color: var(--accent); }
+/* 固定按钮激活态：高亮 + 图标填充，表示翻译栏已固定在左侧。 */
+#btn-sidebar-pin.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+#btn-sidebar-pin.active .icon { fill: currentColor; }
 
 /* ===== 工具栏溢出收纳：「更多」下拉收纳不常用功能，避免菜单栏换行 ===== */
 .toolbar .hidden { display: none; }
@@ -845,6 +917,8 @@ body.shelf-mode main { display: none; }
 }
 .shelf-header button:hover { background: var(--hover); border-color: var(--accent); }
 .shelf-header .btn-open { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.shelf-header .shelf-settings { padding: 6px 8px; }
+.shelf-header .shelf-settings .icon { width: 18px; height: 18px; }
 .shelf-header .btn-open:hover { background: #eef2ff; }
 
 .shelf-body { flex: 1; overflow: auto; padding: 20px 24px 32px; }
@@ -994,7 +1068,7 @@ main.view-in {
 .shelf-card:nth-child(8) { animation-delay: 0.15s; }
 .shelf-card:nth-child(n+9) { animation-delay: 0.17s; }
 
-/* 缩放预览期间把 #pdf-pages 提升为独立合成层，transform 缩放更顺滑（GPU 合成）。 */
+/* 缩放手势进行中：提升 #pdf-pages 为独立合成层，让 transform 预览走 GPU，高刷屏丝滑不卡。 */
 #pdf-pages.zooming { will-change: transform; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1004,21 +1078,10 @@ main.view-in {
 
 /* ===== 授权（Pro 门控） ===== */
 
-/* 未激活：主图标换成小锁（图标按钮/主按钮统一）；激活后显示 Pro 徽标。 */
+/* 未激活：主图标换成小锁（提示需激活）；激活后完全无标识，与普通功能无异。 */
 .toolbar .lock-icon { display: none; width: 15px; height: 15px; opacity: 0.85; }
 .toolbar button.locked .lock-icon { display: inline-block; }
 .toolbar button.locked > .icon:not(.lock-icon) { display: none; }
-.toolbar .pro-badge {
-  display: none;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1;
-  padding: 3px 5px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.28);
-  letter-spacing: 0.02em;
-}
-.toolbar button.pro .pro-badge { display: inline-block; }
 
 /* 设置里的授权区块。 */
 .license-box {
@@ -1043,5 +1106,70 @@ main.view-in {
 .license-row { display: flex; gap: 8px; }
 .license-row input { flex: 1; }
 .license-row .btn { flex: none; }
+
+/* 设置分页：左侧分类栏 + 右侧内容面板。 */
+#settings { width: 660px; }
+.settings-layout {
+  display: grid;
+  grid-template-columns: 132px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+.settings-tabs { display: flex; flex-direction: column; gap: 4px; }
+.settings-tab {
+  text-align: left;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+}
+.settings-tab:hover { background: var(--hover); color: var(--text); }
+.settings-tab.active {
+  background: var(--hover);
+  color: var(--accent);
+  font-weight: 600;
+  border-color: rgba(59, 130, 246, 0.22);
+}
+.settings-panels { min-width: 0; display: grid; }
+.settings-panel {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0s linear 0.2s;
+}
+.settings-panel.active {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+/* 模型配置页里把「翻译模型」与「OCR 模型」在视觉上分成两组。 */
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.settings-group-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+}
+.about-box { padding: 10px 0 2px; text-align: center; color: var(--text-muted); }
+.about-box .about-name { font-size: 15px; font-weight: 700; color: var(--text); margin: 0 0 2px; }
+.about-box .about-ver { font-size: 12px; margin: 0; }
+.about-box .hint { margin-top: 6px; }
+.about-box .btn-manual { margin-top: 12px; }
 
 

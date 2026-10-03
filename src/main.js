@@ -20,11 +20,12 @@ const state = {
   tocPage: 0,             // 双栏目录当前页（0-based）
   tocPages: 1,            // 双栏目录总页数
   vp1Cache: [],           // 各页 scale=1 视口缓存（页面尺寸恒定，避免重建时异步取页导致闪白）
-  zooming: false,         // 缩放手势进行中（期间用 transform 预览、不清理页面，避免闪白）
-  zoomAnchor: null,       // 缩放锚点：#pdf-pages 本地坐标 + 当时布局倍率，重渲染后还原
+  zooming: false,         // 缩放手势进行中（期间跳过懒渲染、不清理页面，避免闪白）
+  zoomAnchor: null,       // 缩放锚点：鼠标下的页 + 页内分数(0..1)，缩放时保持该 PDF 点不动
   zoomAnchorClient: null, // 锚点在视口中的位置（跟随鼠标缩放）
   rtl: false,             // 竖排古籍阅读模式：页面水平从右往左连续排列（第 1 页在最右）
   pro: false,             // 是否已激活 Pro（解锁导出三件套）
+  sidebarPinned: false,   // 悬浮翻译栏是否固定（固定后点击 PDF 画布不收起）
 };
 
 function setStatus(msg) { $('status').textContent = msg || ''; }
@@ -112,13 +113,22 @@ function requirePro() {
   return false;
 }
 
-// 同步导出按钮上的 Pro 角标：已激活隐藏锁、加「Pro」徽标；未激活显示锁。
+// 同步导出按钮的锁图标：未激活显示锁（提示需激活），激活后完全无标识。
 function updateProBadges() {
   ['btn-export', 'btn-export-word', 'btn-export-word-tr'].forEach((id) => {
     const el = $(id);
     if (!el) return;
-    el.classList.toggle('pro', state.pro);
     el.classList.toggle('locked', !state.pro);
+  });
+}
+
+// 设置分页切换：高亮对应分类，显示对应面板。
+function switchSettingsTab(name) {
+  document.querySelectorAll('.settings-tab').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === name);
+  });
+  document.querySelectorAll('.settings-panel').forEach((p) => {
+    p.classList.toggle('active', p.dataset.panel === name);
   });
 }
 
@@ -411,12 +421,33 @@ function reportOpenError(msg) {
   else setStatus(msg);
 }
 
+// 打开内置用户手册：从随应用打包的资源直接 fetch，无需依赖磁盘上的文件。
+// 手册作为内置 PDF 直接走公共加载流程（与普通文档一致），用固定伪路径做排版缓存键。
+const MANUAL_PATH = '__内置使用手册__';
+async function openManual() {
+  try {
+    $('settings').close();
+    setStatus('正在打开用户手册…');
+    const resp = await fetch('manual.pdf');
+    if (!resp.ok) throw new Error('手册资源缺失（HTTP ' + resp.status + '）');
+    const buf = await resp.arrayBuffer();
+    await loadPdfData(new Uint8Array(buf), MANUAL_PATH, '用户手册');
+  } catch (err) {
+    reportOpenError('打开用户手册失败：' + err);
+  }
+}
+
 // 加载并渲染一份 PDF：二进制读取 → PDF.js 解析 → 方向检测 → 重建页面。
 // 由 openPdf（对话框）与 openBook（书架点击）共用。
 async function loadPdfDocument(path, name) {
   // 二进制读取（ArrayBuffer），避免 base64 往返——大扫描件打开更快。
   const bytes = await invoke('read_pdf', { path });
-  state.pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(bytes) }).promise;
+  await loadPdfData(new Uint8Array(bytes), path, name);
+}
+
+// 用已就绪的字节加载并渲染 PDF（openPdf / 书架 / 内置手册共用）。
+async function loadPdfData(data, path, name) {
+  state.pdfDoc = await pdfjsLib.getDocument({ data }).promise;
   state.name = name;
   state.path = path;
   state.pageNum = 1;
@@ -449,6 +480,7 @@ async function loadPdfDocument(path, name) {
   $('pdf-pages').classList.toggle('rtl', state.rtl);
   document.body.classList.toggle('rtl', state.rtl); // 竖排时目录/翻译栏左右互换
   await applyTocPosition(); // 应用竖排目录位置（top/left）
+  resetSidebarLayout(); // 新文档：清理悬浮翻译栏的固定/展开状态，回到干净初始态
   // 竖排按高度适应、横排按宽度适应，按钮提示随排版方向切换。
   $('btn-fit').title = state.rtl ? '适应高度' : '适应宽度';
 
@@ -512,11 +544,17 @@ function markScrollActivity() {
 // （文本层按 CSS 倍率定位、不受 DPR 影响，无需重做）。
 function refreshVisiblePages() {
   if (!state.pdfDoc || state.zooming) return;
-  const fullD = devicePixel();
+  const scale = currentScale();
   for (const i of visiblePageIndices()) {
     const wrap = state.pageEls && state.pageEls[i];
     if (!wrap || wrap.dataset.rendered !== '1' || wrap.dataset.rendering === '1') continue;
     const renderedDpr = parseFloat(wrap.dataset.dpr || '0');
+    // 高清基准必须与 renderPageCanvas 里的 renderScale 一致：大页面受 MAX_RENDER_EDGE 限制，
+    // 实际高清 DPR 会低于 devicePixelRatio。若仍拿 devicePixel 当基准，会把「已渲染到上限」的页
+    // 误判成未高清而反复重绘；且重绘时画布尺寸不变 → 无 prev 过渡 → 白底一闪，滚动停止后
+    // 每次 settle 都闪一次（「闪好几下」）。这里用页面真实尺寸算 renderScale 作为基准。
+    const vp1 = state.vp1Cache && state.vp1Cache[i];
+    const fullD = vp1 ? renderScale(vp1.width * scale, vp1.height * scale) : devicePixel();
     if (renderedDpr >= fullD - 0.05) continue; // 已是高清，无需重绘
     delete wrap.dataset.rendered;
     enqueuePageRender(i);
@@ -633,33 +671,34 @@ async function renderPageCanvas(i) {
     const W = Math.floor(viewport.width * effD);
     const H = Math.floor(viewport.height * effD);
 
-    // 若画布上已有旧位图（如滚动中的低清图）且尺寸将变，先截下来，重设后放大铺回作过渡，
-    // 避免重绘瞬间闪白。
-    let prev = null;
-    if (canvas.width > 1 && canvas.height > 1 && (canvas.width !== W || canvas.height !== H)) {
-      try {
-        prev = document.createElement('canvas');
-        prev.width = canvas.width;
-        prev.height = canvas.height;
-        prev.getContext('2d').drawImage(canvas, 0, 0);
-      } catch { prev = null; }
+    // 升级重绘（可见画布上已有旧位图，典型如滚动中的低清图 → 停止后的高清图）：
+    // 先渲染到离屏画布，完成后再一次性贴回可见画布。若直接画在可见画布上，PDF.js 分块渲染
+    // 会逐块刷新，低清→高清过渡时出现「扫描线式」闪屏；离屏 + 末尾原子 blit 只切一帧，
+    // 期间可见画布一直保留旧位图，不闪白。首帧（无旧位图）仍直接画在可见画布上，让内容尽快出现。
+    const upgrade = canvas.width > 1 && canvas.height > 1 && !!wrap.dataset.dpr;
+    const target = upgrade ? document.createElement('canvas') : canvas;
+    target.width = W;
+    target.height = H;
+    if (!upgrade) {
+      canvas.style.width = Math.floor(viewport.width) + 'px';
+      canvas.style.height = Math.floor(viewport.height) + 'px';
     }
-
-    canvas.width = W;
-    canvas.height = H;
-    canvas.style.width = Math.floor(viewport.width) + 'px';
-    canvas.style.height = Math.floor(viewport.height) + 'px';
-    const ctx = canvas.getContext('2d');
-    if (prev) {
-      ctx.drawImage(prev, 0, 0, W, H); // 旧位图放大铺上作为过渡占位（比白底更不闪）
-    } else {
-      // 先铺白底：部分 WebView2 会把「透明画布」合成成黑色块（类似 0×0 画布黑块问题），
-      // 铺一层白底可避免大画布首帧出现黑屏。
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, W, H);
-    }
+    const ctx = target.getContext('2d');
+    // 先铺白底：部分 WebView2 会把「透明画布」合成成黑色块（类似 0×0 画布黑块问题），
+    // 铺一层白底可避免大画布首帧出现黑屏。
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, W, H);
     ctx.setTransform(effD, 0, 0, effD, 0, 0);
     await page.render({ canvasContext: ctx, viewport }).promise;
+
+    // 升级重绘：把离屏成品一次性贴回可见画布（同步、原子，无中间态）。
+    if (upgrade) {
+      canvas.width = W;
+      canvas.height = H;
+      canvas.style.width = Math.floor(viewport.width) + 'px';
+      canvas.style.height = Math.floor(viewport.height) + 'px';
+      canvas.getContext('2d').drawImage(target, 0, 0);
+    }
     wrap.dataset.rendered = '1';
     wrap.dataset.dpr = String(effD); // 记录本页当前渲染用的 DPR，供 refresh 判断是否需高清重绘
   } catch (err) {
@@ -828,12 +867,14 @@ function pickRenderTarget() {
 // 页面进入「视野 ± 一个半视口」时入队渲染，离开时释放。
 const pageObserver = new IntersectionObserver(
   (entries) => {
+    // 缩放手势期间完全跳过懒渲染/清理：transform 预览每帧都在改变页面的视觉位置，观察器会
+    // 随之每帧触发、无谓地入队又清空（拖慢预览动画）；提交后由 commitZoom 统一重建可见页，
+    // 观察器届时（state.zooming 已复位）再恢复工作。
+    if (state.zooming) return;
     for (const e of entries) {
       const i = Number(e.target.dataset.index);
-      // 缩放手势期间不清理页面（transform 缩放会让页面视觉位置变化，清理易闪白），
-      // 新进入视野的页面仍照常入队（缩小会露出更多内容）。
       if (e.isIntersecting) enqueuePageRender(i);
-      else if (!state.zooming) clearPage(i);
+      else clearPage(i);
     }
   },
   { root: $('viewer'), rootMargin: '150% 150%' },
@@ -929,41 +970,140 @@ function highlightToc(current) {
   rows.forEach((r, i) => r.classList.toggle('active', i === active));
 }
 
+// 页面跳转滑动：固定时长（约 260ms）缓动到目标位置——无论跨多少页都只滑一小段，
+// 既有滑动的手感，又不会像原生 smooth 滚动那样按距离耗时、逐页长滑。连点目录时取消上一段。
+let pageJumpAnim = null;
+function cancelPageJump() {
+  if (pageJumpAnim) { cancelAnimationFrame(pageJumpAnim); pageJumpAnim = null; }
+}
+
+// 先瞬时 scrollIntoView 读出精确目标位置（含 scroll-padding），再立刻还原并缓动过去。
+// 这样既保留 scrollIntoView 的对齐语义，又把「跳变」变成一小段滑动。
+function slideToEl(el, opts) {
+  cancelPageJump();
+  cancelRtlScroll();
+  const viewer = $('viewer');
+  const sl0 = viewer.scrollLeft, st0 = viewer.scrollTop;
+  const prevBehavior = viewer.style.scrollBehavior;
+  viewer.style.scrollBehavior = 'auto';
+  el.scrollIntoView(opts); // 瞬时定位，读出精确目标
+  const sl1 = viewer.scrollLeft, st1 = viewer.scrollTop;
+  viewer.scrollLeft = sl0;
+  viewer.scrollTop = st0;
+  viewer.style.scrollBehavior = prevBehavior;
+  const dl = sl1 - sl0, dt = st1 - st0;
+  if (!dl && !dt) return; // 已在目标位置
+  const dur = 260, t0 = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - t0) / dur);
+    const e = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; // easeInOutQuad
+    viewer.scrollLeft = sl0 + dl * e;
+    viewer.scrollTop = st0 + dt * e;
+    if (t < 1) pageJumpAnim = requestAnimationFrame(step);
+    else pageJumpAnim = null;
+  };
+  pageJumpAnim = requestAnimationFrame(step);
+}
+
 async function goTo(n) {
   if (!state.pdfDoc) return;
   const clamped = Math.min(Math.max(1, n), state.pdfDoc.numPages);
   const wrap = state.pageEls[clamped - 1];
   if (!wrap) return;
-  cancelRtlScroll(); // 停止滚轮缓动，交给原生 smooth 滚动接管
-  // 先渲染目标页再滚动，避免滚动到位时仍是空白（视觉上像「跳一下」）。
+  cancelRtlScroll(); // 停止滚轮缓动，交给跳转接管
+  // 先渲染目标页再跳转，避免滑过去时仍是空白。
   await renderPageAt(clamped - 1);
   if (state.rtl) {
     // 竖排古籍：目标页对齐到视口右侧（从右往左读）。
-    wrap.scrollIntoView({ inline: 'end', block: 'nearest', behavior: 'smooth' });
+    slideToEl(wrap, { inline: 'end', block: 'nearest', behavior: 'auto' });
   } else {
-    wrap.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    slideToEl(wrap, { block: 'start', behavior: 'auto' });
   }
   updatePageIndicator(clamped); // 直接反映目标页，避免读取尚未移动的 scrollTop
 }
 
-// 缩放（跟随鼠标，内容固定）：手势期间用 transform 实时预览（GPU 合成，高刷屏丝滑，锚点内容不动），
-// 短 debounce 后一次性「重建 + 还原滚动」，把鼠标下的内容点还原到鼠标处；提交时清除 transform 预览。
-let zoomCommitTimer = null;
-let zoomEpoch = 0;      // 缩放手势代次（提交前检测是否有更新的手势，避免过时提交）
-let zoomTarget = 1;     // 目标倍率（相对 committed scale）
-let zoomDisplay = 1;    // 当前预览显示倍率（向 zoomTarget 平滑逼近）
-let zoomAnimId = null;  // 预览动画的 rAF 句柄
-let zoomPrevT = 0;      // 上一动画帧时间戳（帧率无关指数平滑）
+// 缩放（跟随鼠标、内容固定）：手势期间用 transform 实时预览（GPU 合成、高刷屏丝滑、锚点内容
+// 不动），短 debounce 后一次性「重排 + 原子贴回高清位图 + 还原滚动」，把鼠标下的内容点还原到
+// 鼠标处。提交时先离屏预渲染可见页，再在同一帧内同步清掉 transform、推进布局、贴回位图、算准
+// 滚动——预览与最终态同一套坐标，中间无交换跳变，也不闪白。
+let zoomEpoch = 0;          // 缩放手势代次：丢弃过期的异步渲染，避免旧倍率位图覆盖新布局
+let zoomBase = 1;           // 手势开始时的布局倍率（无页面命中时按容器坐标换算锚点）
+let zoomTarget = 1;         // 目标倍率（相对已提交 scale 的乘数）
+let zoomDisplay = 1;        // 当前预览显示倍率（向 zoomTarget 平滑逼近）
+let zoomAnimId = null;      // 预览动画的 rAF 句柄
+let zoomPrevT = 0;          // 上一动画帧时间戳（帧率无关指数平滑）
+let zoomCommitTimer = null; // 手势结束后的提交 debounce（收敛触发为主，此为兜底）
+let zoomCommitting = false;   // commitZoom 是否在进行中（离屏预渲染期间）
+let zoomCommitPending = false; // 提交进行中又收到新提交请求，结束后补跑一次
 
-// 复位缩放相关状态（打开新文档 / 适应宽度 / 提交缩放时调用）。
+// 把离屏位图按倍率贴回第 i 页画布（同步、原子，无中间空白帧）。
+function blitPageBitmap(i, scale, bmp) {
+  const wrap = state.pageEls[i];
+  const canvas = wrap.querySelector('canvas');
+  const vp1 = state.vp1Cache[i];
+  const d = renderScale(vp1.width * scale, vp1.height * scale);
+  canvas.width = Math.floor(vp1.width * scale * d);
+  canvas.height = Math.floor(vp1.height * scale * d);
+  // CSS 尺寸取整，与 renderPageCanvas 里 Math.floor(viewport.width) 保持一致：
+  // 否则提交后懒渲染会再把宽度抹平成整数，整列页面往下移个零点几像素（终点轻微跳一下）。
+  canvas.style.width = Math.floor(vp1.width * scale) + 'px';
+  canvas.style.height = Math.floor(vp1.height * scale) + 'px';
+  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  wrap.dataset.rendered = '1';
+  wrap.dataset.dpr = String(d);
+}
+
+// 把所有页的布局尺寸推进到倍率 scale（不重建 DOM，只改画布 CSS 尺寸 + 清文本层）。
+// 旧位图先保留作占位（CSS 拉伸，不闪白），标记待重渲染，稍后由 commitZoom 贴回预渲染
+// 位图或收尾的 enqueuePageRender（结束后）换成新倍率高清位图；无位图的页保持 1×1 空白。
+function rescalePages(scale) {
+  const container = $('pdf-pages');
+  container.style.setProperty('--scale-factor', String(scale));
+  container.style.setProperty('--page-gap', (18 * scale) + 'px');
+  renderPending.clear();
+  const vps = state.vp1Cache;
+  for (let i = 0; i < state.pageEls.length; i++) {
+    const wrap = state.pageEls[i];
+    const w = vps[i].width * scale;
+    const h = vps[i].height * scale;
+    const canvas = wrap.querySelector('canvas');
+    const hadBitmap = wrap.dataset.rendered === '1';
+    if (wrap.dataset.textLayer === '1' || wrap.dataset.textBuilding === '1') clearTextLayerOnly(i);
+    if (!hadBitmap) {
+      canvas.width = 1;
+      canvas.height = 1;
+    }
+    delete wrap.dataset.rendered;
+    canvas.style.width = Math.floor(w) + 'px';
+    canvas.style.height = Math.floor(h) + 'px';
+  }
+}
+
+// 仅清空第 i 页的文本层（缩放期间保留画布位图用于拉伸占位）。
+function clearTextLayerOnly(i) {
+  const wrap = state.pageEls && state.pageEls[i];
+  if (!wrap) return;
+  wrap._tlToken = (wrap._tlToken || 0) + 1;
+  const tl = wrap._textLayer;
+  if (tl) { try { tl.cancel(); } catch { /* ignore */ } wrap._textLayer = null; }
+  const layer = wrap.querySelector('.text-layer');
+  if (layer) layer.textContent = '';
+  delete wrap.dataset.textLayer;
+  delete wrap.dataset.textBuilding;
+}
+
+// 复位缩放相关状态（打开新文档 / 适应宽度 / 手势收尾时调用）。
 function resetZoomState() {
   clearTimeout(zoomCommitTimer);
+  zoomCommitTimer = null;
   zoomEpoch++;
+  zoomBase = 1;
   zoomTarget = 1;
   zoomDisplay = 1;
   if (zoomAnimId) { cancelAnimationFrame(zoomAnimId); zoomAnimId = null; }
   zoomPrevT = 0;
   cancelRtlScroll();
+  cancelPageJump(); // 缩放/适应/开新书时接管滚动，停掉目录跳转滑动
   state.zooming = false;
   state.zoomAnchor = null;
   state.zoomAnchorClient = null;
@@ -980,7 +1120,42 @@ function setScrollInstant(el, left, top) {
   el.style.scrollBehavior = prev;
 }
 
-async function zoom(factor, clientX, clientY) {
+// 缩放后把鼠标下的 PDF 点放回鼠标位置。用「页 + 页内分数」精确定位：页面居中布局下，
+// 容器本地坐标混入了不随缩放线性变化的居中边距，页内分数随页面等比缩放，定位才精确。
+// 以「画布铺满窗口」为分界、按轴各自处理：比窗口大的轴正常锚定（到边缘自动夹紧），
+// 即「严格保持鼠标指向的 PDF 点不动」；比窗口小的轴浏览器会把 scroll 夹到 0、页面由
+// CSS 居中，即「自适应居中」。分界正是「内容铺满窗口」，无需额外判断。
+function repositionAfterScale() {
+  const viewer = $('viewer');
+  const a = state.zoomAnchor;
+  const m = state.zoomAnchorClient;
+  if (!a || !m) return;
+  void viewer.offsetHeight; // 强制布局 flush，确保 resize 后的尺寸/滚动范围已结算
+  const vrect = viewer.getBoundingClientRect();
+  const maxL = Math.max(0, viewer.scrollWidth - viewer.clientWidth);
+  const maxT = Math.max(0, viewer.scrollHeight - viewer.clientHeight);
+  let sl, st;
+  const pageEl = a.page != null && state.pageEls ? state.pageEls[a.page] : null;
+  if (pageEl) {
+    const prect = pageEl.getBoundingClientRect();
+    sl = viewer.scrollLeft + ((prect.left - vrect.left) + a.fx * prect.width) - m.x;
+    st = viewer.scrollTop + ((prect.top - vrect.top) + a.fy * prect.height) - m.y;
+  } else {
+    // 未命中页面（点在页间空白）时的退化：容器坐标 ×(目标倍率 / 手势起始倍率)。
+    const crect = $('pdf-pages').getBoundingClientRect();
+    sl = viewer.scrollLeft + (crect.left - vrect.left + (a.x / zoomBase) * currentScale()) - m.x;
+    st = viewer.scrollTop + (crect.top - vrect.top + (a.y / zoomBase) * currentScale()) - m.y;
+  }
+  // 数值防御：异常 rect/除零产生 NaN/Infinity，或越界时夹紧，避免把滚动打到文档尽头。
+  if (!Number.isFinite(sl)) sl = viewer.scrollLeft;
+  if (!Number.isFinite(st)) st = viewer.scrollTop;
+  sl = Math.max(0, Math.min(maxL, sl));
+  st = Math.max(0, Math.min(maxT, st));
+  logDiag(`[zoom-pos] page=${a.page != null ? a.page : '-'} fx=${a.fx == null ? '-' : a.fx.toFixed(3)} fy=${a.fy == null ? '-' : a.fy.toFixed(3)} scale=${currentScale().toFixed(3)} sl=${sl.toFixed(0)} st=${st.toFixed(0)} dL=${(sl - viewer.scrollLeft).toFixed(0)} dT=${(st - viewer.scrollTop).toFixed(0)} maxL=${maxL} maxT=${maxT}`);
+  setScrollInstant(viewer, sl, st);
+}
+
+function zoom(factor, clientX, clientY) {
   if (!state.pdfDoc) return;
   const viewer = $('viewer');
   const cur = currentScale();
@@ -989,50 +1164,65 @@ async function zoom(factor, clientX, clientY) {
   if (Math.abs(newTarget - zoomTarget) < 0.001) return;
 
   zoomEpoch++;
+  // 停止进行中的滚轮/目录跳转滑动，避免其继续改写 scroll 与缩放锚定打架、页面乱滑。
+  cancelRtlScroll();
+  cancelPageJump();
 
-  // 记录鼠标下的内容锚点（#pdf-pages 本地坐标 + 当时布局倍率）+ 鼠标位置，提交时还原到该点。
+  // 手势第一步：记录鼠标下的 PDF 锚点（所在页 + 页内分数 0..1）与鼠标视口位置，
+  // 后续每步都按该点还原。页面居中布局下容器本地坐标混入了不随缩放线性变化的居中边距，
+  // 页内分数随页面等比缩放，定位精确；点在页间空白时退化为容器坐标法。
   if (!state.zoomAnchor) {
     state.zooming = true;
+    zoomBase = cur;
     $('pdf-pages').classList.add('zooming'); // 提升为独立合成层，让 transform 预览走 GPU
     const vrect = viewer.getBoundingClientRect();
     const mx = clientX != null ? clientX - vrect.left : viewer.clientWidth / 2;
     const my = clientY != null ? clientY - vrect.top : viewer.clientHeight / 2;
     const crect = $('pdf-pages').getBoundingClientRect();
-    state.zoomAnchor = { x: mx - (crect.left - vrect.left), y: my - (crect.top - vrect.top), cur };
+    const anchor = {
+      x: mx - (crect.left - vrect.left), // 容器本地坐标（无页面命中时的退化锚点）
+      y: my - (crect.top - vrect.top),
+    };
+    // 记录视口/容器/滚动/鼠标，供预览期间解析地算出「提交后锚点会落在哪」（含滚动夹紧），
+    // 从而反推 transform-origin，使预览终点与提交布局严格一致（缩小露边/居中时不再跳一下）。
+    anchor.mx = mx;
+    anchor.my = my;
+    anchor.vleft = vrect.left;
+    anchor.vtop = vrect.top;
+    anchor.sl = viewer.scrollLeft;
+    anchor.st = viewer.scrollTop;
+    anchor.cw = crect.width;
+    anchor.ch = crect.height;
+    anchor.contentW = viewer.clientWidth - 40;  // 视口内容区宽（去左右 padding）
+    anchor.contentH = viewer.clientHeight - 40; // 视口内容区高（去上下 padding）
+    const el = document.elementFromPoint(vrect.left + mx, vrect.top + my);
+    const pageEl = el && el.closest ? el.closest('.pdf-page') : null;
+    if (pageEl) {
+      const prect = pageEl.getBoundingClientRect();
+      if (prect.width > 0 && prect.height > 0) {
+        anchor.page = Number(pageEl.dataset.index);
+        anchor.fx = (mx - (prect.left - vrect.left)) / prect.width;
+        anchor.fy = (my - (prect.top - vrect.top)) / prect.height;
+        anchor.pageLeft = prect.left - crect.left; // 页在容器中的本地位置（cur 倍率）
+        anchor.pageTop = prect.top - crect.top;
+      }
+    }
+    state.zoomAnchor = anchor;
     state.zoomAnchorClient = { x: mx, y: my };
   }
 
   zoomTarget = newTarget;
   $('zoom-info').textContent = Math.round(target * 100) + '%';
 
-  // 手势期间 transform 实时预览：以锚点为 origin 缩放，锚点内容保持不动。
-  // 用 rAF 指数平滑把显示倍率逼近目标，而不是每格滚轮直接跳到位——高刷屏上同样丝滑。
-  $('pdf-pages').style.transformOrigin = `${state.zoomAnchor.x}px ${state.zoomAnchor.y}px`;
+  // 手势期间 transform 实时预览：按轴选择 origin（锚定鼠标 or 贴边/居中），
+  // 使预览终点与提交后的布局严格一致，缩小到「画布露边/居中」时不再跳一下。
+  setZoomPreviewOrigin();
   startZoomPreview();
 
+  // 收尾提交由预览动画收敛时触发（见 stepZoomPreview）；此处仅留一个长兜底计时器，
+  // 防止极端情况下收敛未触发导致永不提交。1500ms 远大于最坏收敛时长（约 0.6s），正常不会走到。
   clearTimeout(zoomCommitTimer);
-  zoomCommitTimer = setTimeout(() => { commitZoom(); }, 150);
-}
-
-// 启动/继续缩放预览动画：每帧把 zoomDisplay 向 zoomTarget 平滑逼近，直到收敛。
-function startZoomPreview() {
-  if (zoomAnimId) return; // 动画已在跑，会继续逼近新目标
-  zoomPrevT = 0;
-  zoomAnimId = requestAnimationFrame(stepZoomPreview);
-}
-
-function stepZoomPreview(now) {
-  zoomAnimId = null;
-  const dt = zoomPrevT ? Math.min(now - zoomPrevT, 64) : 16; // 限制 dt，后台切回不跳变
-  zoomPrevT = now;
-  // 帧率无关的指数平滑：时间常数 80ms，60Hz 与 144Hz 手感一致。
-  const k = 1 - Math.exp(-dt / 80);
-  zoomDisplay += (zoomTarget - zoomDisplay) * k;
-  if (Math.abs(zoomTarget - zoomDisplay) < 0.0015) zoomDisplay = zoomTarget;
-  $('pdf-pages').style.transform = `scale(${zoomDisplay})`;
-  if (Math.abs(zoomTarget - zoomDisplay) > 0.0001) {
-    zoomAnimId = requestAnimationFrame(stepZoomPreview);
-  }
+  zoomCommitTimer = setTimeout(() => { commitZoom(); }, 1500);
 }
 
 // ===== 竖排（RTL）滚轮平滑滚动 =====
@@ -1043,6 +1233,7 @@ let rtlScrollAnim = null;
 let rtlScrollPrevT = 0;
 
 function nudgeRtlScroll(delta) {
+  cancelPageJump(); // 滚轮手动滚动接管，停掉目录跳转滑动
   const viewer = $('viewer');
   const max = Math.max(0, viewer.scrollWidth - viewer.clientWidth);
   if (rtlScrollTarget === null) rtlScrollTarget = viewer.scrollLeft;
@@ -1104,53 +1295,193 @@ function visiblePageIndices() {
   return out;
 }
 
-// 缩放手势结束：按目标倍率重渲染并还原锚点位置，恢复清晰度与正确滚动范围。
-// 提交前先把可见页预渲染成清晰位图，交换布局时直接填入，避免页面短暂空白。
-async function commitZoom() {
-  if (!state.pdfDoc) return;
-  const epoch = zoomEpoch;
-  const viewer = $('viewer');
-  const container = $('pdf-pages');
-  const target = Math.min(5, Math.max(0.3, currentScale() * zoomTarget));
-
-  const anchor = state.zoomAnchor;
-  const anchorClient = state.zoomAnchorClient;
-  const anchorPt = anchor ? { x: anchor.x / anchor.cur, y: anchor.y / anchor.cur } : null;
-
-  // 预渲染可见页（含上下相邻页，防边界漏白）。
-  const indices = visiblePageIndices();
-  const set = new Set(indices);
-  for (const i of indices) { set.add(i - 1); set.add(i + 1); }
-  const pre = new Map();
-  await Promise.all(
-    [...set].filter((i) => i >= 0 && i < state.pdfDoc.numPages).map(async (i) => {
-      try {
-        pre.set(i, await renderToOffscreen(i + 1, target));
-      } catch { /* 预渲染失败则退化为懒加载 */ }
-    }),
-  );
-
-  // 期间若又有新的缩放手势 / 复位，放弃本次过时的提交，由新提交接管。
-  if (epoch !== zoomEpoch) return;
-
-  resetZoomState();
-  state.fitScale = null;
-  state.scale = target;
-  await rebuildPages(pre);
-
-  // 把缩放锚点内容放回鼠标（或视口中心）位置。
-  if (anchorPt && anchorClient) {
-    const lx = anchorPt.x * target;
-    const ly = anchorPt.y * target;
-    const vrect = viewer.getBoundingClientRect();
-    const crect = container.getBoundingClientRect();
-    setScrollInstant(
-      viewer,
-      viewer.scrollLeft + (crect.left - vrect.left + lx) - anchorClient.x,
-      viewer.scrollTop + (crect.top - vrect.top + ly) - anchorClient.y,
-    );
+// 预计算 scale=1 下全部页面的内容度量（最大页宽/高、整列总高、整行总宽），供缩放预览期间
+// 解析地推算滚动夹紧边界；缓存键为 vp1Cache 引用，文档重建后自动失效。
+function contentMetricsAtScale1() {
+  if (state._metricsFor !== state.vp1Cache) {
+    const vps = state.vp1Cache || [];
+    let maxW = 0, maxH = 0, totalH = 0, rowW = 0;
+    for (let i = 0; i < vps.length; i++) {
+      const v = vps[i];
+      maxW = Math.max(maxW, v.width);
+      maxH = Math.max(maxH, v.height);
+      totalH += v.height;
+      rowW += v.width;
+    }
+    // 横排（LTR）每页 margin-bottom 一个 gap（含最后一页），容器另加固定 padding-bottom 16px；
+    // 竖排（RTL）用 flex gap，只在页与页之间（N-1 个）、无 padding-bottom。16px 固定值在调用处另加。
+    const n = Math.max(0, vps.length);
+    state._metrics = {
+      maxW, maxH,
+      totalH: totalH + n * 18,                  // LTR 整列总高（含所有 margin-bottom）
+      rowW: rowW + Math.max(0, n - 1) * 18,     // RTL 整行总宽（flex gap）
+    };
+    state._metricsFor = state.vp1Cache;
   }
-  updatePageIndicator();
+  return state._metrics || { maxW: 0, maxH: 0, totalH: 0, rowW: 0 };
+}
+
+// 计算并设置 transform-origin。解析地算出「提交后锚点会落在哪」：按轴对滚动做 [0,max] 夹紧
+// （内容小于视口时自动贴边/居中），再反推 origin，使 transform 预览每一帧都与最终布局一致。
+// 这样缩小到「画布露边/居中」时，滚动夹紧在预览中就已平滑发生，提交瞬间不再跳一下。
+function setZoomPreviewOrigin() {
+  const a = state.zoomAnchor;
+  if (!a) return;
+  const k = zoomDisplay;
+  const denom = 1 - k;
+  if (denom < 1e-4) {
+    // k≈1（尚未缩放）：transform 近乎恒等，origin 取值无所谓，直接锚定鼠标。
+    $('pdf-pages').style.transformOrigin = `${a.x}px ${a.y}px`;
+    return;
+  }
+  const s = zoomBase * k;          // 当前视觉倍率
+  const m = contentMetricsAtScale1();
+  const pad = 20;                  // 视口四周 padding
+  const clampScroll = (v, hi) => (v < 0 ? 0 : v > hi ? hi : v);
+
+  const vp = a.page != null ? state.vp1Cache[a.page] : null;
+  if (!vp) {
+    // 无页面命中（点在页间空白/边距）：退化为容器坐标按倍率线性缩放，同样解析地复现
+    // 提交后的滚动夹紧，缩小露边/居中时同样不跳。此时锚点没有「页内分数」，只按 a.x/a.y 线性缩。
+    let maxL, maxT;
+    if (state.rtl) {
+      maxL = Math.max(0, m.rowW * s - a.contentW);
+      maxT = Math.max(0, m.maxH * s - a.contentH);
+    } else {
+      maxL = Math.max(0, m.maxW * s - a.contentW);
+      maxT = Math.max(0, m.totalH * s + 16 - a.contentH); // +16 = 容器固定 padding-bottom
+    }
+    const usl = pad + a.x * k - a.mx;
+    const ust = pad + a.y * k - a.my;
+    const csl = clampScroll(usl, maxL);
+    const cst = clampScroll(ust, maxT);
+    const ox = (a.sl - csl) / denom;
+    const oy = (a.st - cst) / denom;
+    $('pdf-pages').style.transformOrigin = `${ox}px ${oy}px`;
+    return;
+  }
+
+  const pw = vp.width * s;
+  const ph = vp.height * s;
+  let pageLeft_s, pageTop_s, usl, maxL, ust, maxT;
+  if (state.rtl) {
+    // 竖排：横向整行滚动，纵向页面 margin:auto 0 居中。
+    pageLeft_s = a.pageLeft * k;
+    usl = pad + pageLeft_s + a.fx * pw - a.mx;
+    maxL = Math.max(0, m.rowW * s - a.contentW);
+    // 竖排页面垂直居中相对的是「视口内容高度」而非手势起始时的容器高度（缩到铺满时容器会变矮），
+    // 用 a.contentH 才能让预览的居中位置与提交后的 margin:auto 0 居中一致，避免上下跳一下。
+    pageTop_s = Math.max(0, (a.contentH - ph) / 2);
+    ust = pad + pageTop_s + a.fy * ph - a.my;
+    maxT = Math.max(0, m.maxH * s - a.contentH);
+  } else {
+    // 横排：页面水平 margin:0 auto 居中，纵向整列滚动。
+    pageLeft_s = Math.max(0, (a.cw - pw) / 2);
+    usl = pad + pageLeft_s + a.fx * pw - a.mx;
+    maxL = Math.max(0, m.maxW * s - a.cw);
+    pageTop_s = a.pageTop * k;
+    ust = pad + pageTop_s + a.fy * ph - a.my;
+    maxT = Math.max(0, m.totalH * s + 16 - a.contentH); // +16 = 容器固定 padding-bottom
+  }
+
+  const csl = clampScroll(usl, maxL);
+  const cst = clampScroll(ust, maxT);
+  // 反推 origin：使 transform 把锚点（容器本地 a.x/a.y）恰好映射到「夹紧后」的最终视口位置。
+  const ox = (a.sl - csl + pageLeft_s + a.fx * pw - k * a.x) / denom;
+  const oy = (a.st - cst + pageTop_s + a.fy * ph - k * a.y) / denom;
+  $('pdf-pages').style.transformOrigin = `${ox}px ${oy}px`;
+}
+
+// 启动/继续缩放预览动画：每帧把 zoomDisplay 向 zoomTarget 平滑逼近，直到收敛。
+// 帧率无关的指数平滑（时间常数 80ms），60Hz 与 144Hz 手感一致。
+function startZoomPreview() {
+  if (zoomAnimId) return; // 动画已在跑，会继续逼近新目标
+  zoomPrevT = 0;
+  zoomAnimId = requestAnimationFrame(stepZoomPreview);
+}
+
+function stepZoomPreview(now) {
+  zoomAnimId = null;
+  const dt = zoomPrevT ? Math.min(now - zoomPrevT, 64) : 16; // 限制 dt，后台切回不跳变
+  zoomPrevT = now;
+  const k = 1 - Math.exp(-dt / 80);
+  zoomDisplay += (zoomTarget - zoomDisplay) * k;
+  // origin 随当前预览倍率按轴切换：内容一旦缩到「小于视口」就贴边/居中，
+  // 切换点正好在「铺满视口」处（唯一布局位置），因此切换无跳变。
+  setZoomPreviewOrigin();
+  if (Math.abs(zoomTarget - zoomDisplay) < 0.0015) {
+    // 预览已精确收敛到目标倍率：定格到精确值并立即收尾提交。这样预览终点与提交布局严格一致，
+    // 无「终点差一点」的跳变；且提交的离屏预渲染发生在动画停止之后，不再与 rAF 抢主线程掉帧。
+    zoomDisplay = zoomTarget;
+    $('pdf-pages').style.transform = `scale(${zoomDisplay})`;
+    clearTimeout(zoomCommitTimer);
+    zoomCommitTimer = null;
+    commitZoom();
+    return;
+  }
+  $('pdf-pages').style.transform = `scale(${zoomDisplay})`;
+  zoomAnimId = requestAnimationFrame(stepZoomPreview);
+}
+
+// 缩放手势结束：按目标倍率重排 + 原子贴回高清位图 + 还原锚点，恢复清晰度与正确滚动范围。
+// 提交前先把可见页离屏预渲染；预渲染完成后，在同一同步块内清掉 transform 预览、推进布局、
+// 贴回位图、算准滚动——中间不跨帧，浏览器只画一次，预览到最终态无交换跳变、不闪白。
+async function commitZoom() {
+  if (!state.pdfDoc || !state.zooming) return; // 无进行中的手势（如兜底计时器迟到）则忽略
+  // 上一次提交（离屏预渲染）尚未结束：标记待补跑，结束后由 finally 接管，避免并发预渲染争抢主线程。
+  if (zoomCommitting) { zoomCommitPending = true; return; }
+  zoomCommitting = true;
+  try {
+    const epoch = zoomEpoch;
+    const container = $('pdf-pages');
+    const target = Math.min(5, Math.max(0.3, currentScale() * zoomTarget));
+
+    // 预渲染可见页（含上下相邻页，防边界漏白）到离屏位图。
+    const indices = visiblePageIndices();
+    const set = new Set(indices);
+    for (const i of indices) { set.add(i - 1); set.add(i + 1); }
+    const pre = new Map();
+    await Promise.all(
+      [...set].filter((i) => i >= 0 && i < state.pdfDoc.numPages).map(async (i) => {
+        try { pre.set(i, await renderToOffscreen(i + 1, target)); }
+        catch { /* 预渲染失败则退化为懒加载 */ }
+      }),
+    );
+
+    // 期间若又有新的缩放手势 / 复位，放弃本次过时的提交，由新提交接管。
+    if (epoch !== zoomEpoch) return;
+
+    // 以下为同一同步块：清预览 transform → 推进布局 → 贴回高清 → 还原滚动，原子完成。
+    state.fitScale = null;
+    state.scale = target;
+    container.style.transform = '';
+    container.style.transformOrigin = '';
+    container.classList.remove('zooming');
+    rescalePages(target);
+    for (const [i, bmp] of pre) {
+      if (state.pageEls[i]) blitPageBitmap(i, target, bmp);
+    }
+    repositionAfterScale();
+
+    // 收尾：复位手势态，重建可见页文本层，补齐未预渲染页的 canvas。
+    state.zooming = false;
+    state.zoomAnchor = null;
+    state.zoomAnchorClient = null;
+    if (zoomAnimId) { cancelAnimationFrame(zoomAnimId); zoomAnimId = null; }
+    zoomTarget = 1;
+    zoomDisplay = 1;
+    zoomPrevT = 0;
+    for (const i of visiblePageIndices()) {
+      if (state.pageEls[i]) enqueuePageRender(i);
+    }
+    updatePageIndicator();
+  } finally {
+    zoomCommitting = false;
+    if (zoomCommitPending) {
+      zoomCommitPending = false;
+      commitZoom();
+    }
+  }
 }
 
 async function fitWidth() {
@@ -2732,6 +3063,41 @@ async function copyTranslation() {
   }
 }
 
+// 对话框可拖动：按住标题栏拖动整个 <dialog>。原生 modal 靠 inset+margin:auto 居中，
+// 首次拖动时切换为显式 left/top 定位；拖动中限制在视口内，避免拖出屏幕无法找回。
+// 关闭时复位定位，下次打开重新居中。
+function makeDialogDraggable(dialog, handle) {
+  let drag = null;
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const rect = dialog.getBoundingClientRect();
+    dialog.style.margin = '0';
+    dialog.style.right = 'auto';
+    dialog.style.bottom = 'auto';
+    dialog.style.left = rect.left + 'px';
+    dialog.style.top = rect.top + 'px';
+    drag = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    try { handle.setPointerCapture(e.pointerId); } catch { /* 捕获失败不阻塞拖动 */ }
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    e.preventDefault();
+    const rect = dialog.getBoundingClientRect();
+    const maxX = Math.max(0, window.innerWidth - rect.width);
+    const maxY = Math.max(0, window.innerHeight - rect.height);
+    dialog.style.left = Math.max(0, Math.min(e.clientX - drag.dx, maxX)) + 'px';
+    dialog.style.top = Math.max(0, Math.min(e.clientY - drag.dy, maxY)) + 'px';
+  });
+  const end = () => { drag = null; };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+  // 关闭后清掉显式定位，下次 showModal 重新居中。
+  dialog.addEventListener('close', () => {
+    dialog.style.left = dialog.style.top = dialog.style.right = dialog.style.bottom = '';
+    dialog.style.margin = '';
+  });
+}
+
 async function openSettings() {
   const cfg = await invoke('get_config');
   $('cfg-base-url').value = cfg.translate.base_url;
@@ -2747,6 +3113,7 @@ async function openSettings() {
   $('cfg-viewer-rtl').checked = !!(cfg.viewer && cfg.viewer.rtl);
   $('cfg-toc-position').value = (cfg.viewer && cfg.viewer.toc_position) || 'top';
   await refreshLicenseStatus(); // 刷新 Pro 状态显示
+  switchSettingsTab('model'); // 每次打开回到「模型配置」
   $('settings').showModal();
 }
 
@@ -2801,18 +3168,67 @@ async function saveConfig() {
   }
 }
 
-// 阅读模式：隐藏右侧翻译面板，画布占满剩余宽度（重新适应宽度会保留当前页）。
+// 悬浮翻译栏是否生效：竖排 + 顶部/双栏目录（目录与翻译栏均为浮层）；左侧目录与横排保持原布局。
+function isFloatingSidebar() {
+  return state.rtl && !document.body.classList.contains('toc-left');
+}
+
+// 固定翻译栏：固定后点击 PDF 画布不再收起。
+function setSidebarPinned(v) {
+  state.sidebarPinned = v;
+  $('sidebar').classList.toggle('pinned', v);
+  $('btn-sidebar-pin').classList.toggle('active', v);
+}
+function toggleSidebarPin() {
+  setSidebarPinned(!state.sidebarPinned);
+  if (state.sidebarPinned) {
+    $('sidebar').classList.remove('collapsed');
+    document.body.classList.add('sidebar-open');
+  }
+}
+function collapseSidebar() {
+  setSidebarPinned(false);
+  $('sidebar').classList.add('collapsed');
+  document.body.classList.remove('sidebar-open');
+}
+// 打开新文档时清理悬浮翻译栏的临时状态（固定/展开），回到干净的初始态。
+function resetSidebarLayout() {
+  setSidebarPinned(false);
+  document.body.classList.remove('sidebar-open');
+  if (isFloatingSidebar()) $('sidebar').classList.add('collapsed');
+}
+
+// 阅读模式：隐藏翻译面板，画布占满剩余宽度（重新适应宽度会保留当前页）。
+// 悬浮翻译栏不参与布局，阅读模式仅收起浮层、退出时重新展开，无需重排画布。
 function toggleReadingMode() {
   const on = document.body.classList.toggle('reading');
   $('btn-reading').classList.toggle('active', on);
-  if (state.pdfDoc) fitWidth();
+  if (isFloatingSidebar()) {
+    if (on) collapseSidebar();
+    else showSidebar(); // 退出阅读模式：重新展开翻译栏
+  } else if (state.pdfDoc) {
+    if (on) {
+      fitWidth();
+    } else if ($('sidebar').classList.contains('collapsed')) {
+      // 翻译栏原本是收起的：展开它会有宽度过渡，等过渡结束再重排画布。
+      showSidebar();
+      refitAfterResize();
+    } else {
+      // 翻译栏本就展开：display:none 撤销后立即可见，直接重排。
+      fitWidth();
+    }
+  }
 }
 
-// 展开翻译栏（点击「提取文字」/「翻译」时自动弹出）。默认收起；阅读模式下也会退出阅读模式。
+// 展开翻译栏（点击「提取文字」/「翻译」时自动弹出），并退出阅读模式。
+// 悬浮态浮在 PDF 上展开、不改画布布局；横排/左侧目录则取消 reading 的隐藏。
 function showSidebar() {
   $('sidebar').classList.remove('collapsed');
   document.body.classList.remove('reading');
   $('btn-reading').classList.remove('active');
+  if (isFloatingSidebar()) {
+    document.body.classList.add('sidebar-open');
+  }
 }
 
 // ===== 书架首页（书架 / 最近阅读 / 收藏） =====
@@ -3200,12 +3616,19 @@ function bindEvents() {
   $('btn-translate').addEventListener('click', translate);
   $('btn-copy').addEventListener('click', copyTranslation);
   $('btn-settings').addEventListener('click', openSettings);
+  $('btn-shelf-settings').addEventListener('click', openSettings);
   $('btn-reading').addEventListener('click', toggleReadingMode);
   $('btn-toc').addEventListener('click', toggleToc);
   $('toc-generate').addEventListener('click', generateToc);
   $('btn-toc-collapse').addEventListener('click', closeToc);
+  $('btn-sidebar-pin').addEventListener('click', toggleSidebarPin);
+  $('btn-sidebar-close').addEventListener('click', collapseSidebar);
   $('settings-form').addEventListener('submit', (e) => { e.preventDefault(); saveConfig(); });
   $('btn-cancel-cfg').addEventListener('click', () => $('settings').close());
+  makeDialogDraggable($('settings'), $('settings').querySelector('h2.drag-handle'));
+  document.querySelectorAll('.settings-tab').forEach((btn) => {
+    btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab));
+  });
   $('extract-pages-form').addEventListener('submit', (e) => { e.preventDefault(); exportPagesToPdf(); });
   $('btn-cancel-extract').addEventListener('click', closeExtractPages);
   $('activate-form').addEventListener('submit', (e) => { e.preventDefault(); submitActivate(); });
@@ -3215,6 +3638,7 @@ function bindEvents() {
     if (!code) { setStatus('请输入激活码'); return; }
     await activateLicense(code);
   });
+  $('btn-manual').addEventListener('click', openManual);
 
   // Ctrl + 滚轮缩放（passive: false 才能 preventDefault 阻止页面滚动）。
   // 用 rAF 把快速连续滚动合并成一次缩放，并记录鼠标位置以便缩放时跟随鼠标。
@@ -3344,6 +3768,8 @@ function bindEvents() {
     if (!state.rtl) return;
     const panel = $('toc-panel');
     if (!panel.classList.contains('collapsed')) panel.classList.add('collapsed');
+    // 悬浮翻译栏：点击 PDF 画布收起（固定时除外）。
+    if (isFloatingSidebar() && !state.sidebarPinned) collapseSidebar();
   });
   // 点击目录面板空白处（含右侧「目录」栏空白，但非条目/标签/收起按钮/翻页器/拖拽把手）收起目录。
   $('toc-panel').addEventListener('click', (e) => {
@@ -3364,6 +3790,7 @@ function bindEvents() {
     if (!state.pdfDoc || e.button !== 0) return;
     if (!(e.target && e.target.closest && e.target.closest('.pdf-page'))) return;
     cancelRtlScroll(); // 拖拽平移接管滚动，停掉滚轮缓动
+    cancelPageJump();
     pan = { id: e.pointerId, sx: e.clientX, sy: e.clientY, moved: false };
   });
   viewerEl.addEventListener('pointermove', (e) => {
