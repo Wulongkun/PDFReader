@@ -4,7 +4,9 @@ Windows 上的 PDF 阅读与翻译桌面应用（Rust + Tauri 2 + PDF.js）。
 
 ## 下载
 
-到 [Releases](https://github.com/Wulongkun/PDFReader/releases/latest) 下载最新版安装包（解压即用，绿色免安装，无需 Python）：
+到 [Releases](https://github.com/Wulongkun/PDFReader/releases/latest) 下载最新版安装包（解压即用，绿色免安装，无需 Python）。
+
+> 国内网络访问 GitHub Releases 慢的，可改从个人服务器快速下载：**http://yuanjingzh.cn/app/**
 
 | 文件 | 适用 |
 | --- | --- |
