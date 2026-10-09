@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>使用前必读：PDFReader API Key 获取教程</title>
+  <meta name="description" content="PDFReader 使用前必读教程：翻译与提取文本功能需 DeepSeek 与 GLM-OCR API 支持，在设置对应界面填写 API Key，其他功能可离线运行；含 DeepSeek 与智谱 BigModel 平台 API Key 分步获取方法。" />
+  <meta name="keywords" content="PDFReader, API Key, DeepSeek, GLM-OCR, 教程" />
+  <meta name="robots" content="index, follow" />
+  <meta property="og:title" content="使用前必读：PDFReader API Key 获取教程" />
+  <meta property="og:description" content="PDFReader 使用前必读教程：翻译与提取文本功能需 DeepSeek 与 GLM-OCR API 支持，在设置对应界面填写 API Key，其他功能可离线运行；含 DeepSeek 与智谱 BigModel 平台 API Key 分步获取方法。" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%2307c160'/%3E%3Ctext x='50' y='70' font-size='58' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'%3EP%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+
+  <main class="guide">
+    <div class="container-narrow">
+
+      <a href="index.html" class="back-link">
+        <svg class="icon" viewBox="0 0 512 512" aria-hidden="true"><path d="M9.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 288 480 288c17.7 0 32-14.3 32-32s-14.3-32-32-32l-370.7 0 105.4-105.4c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg>
+        返回激活码获取页
+      </a>
+
+      <div class="guide-head">
+        <span class="head-icon">
+          <svg class="icon" viewBox="0 0 512 512" aria-hidden="true"><path d="M336 352c97.2 0 176-78.8 176-176S433.2 0 336 0 160 78.8 160 176c0 18.7 2.9 36.8 8.3 53.7L7 391c-4.5 4.5-7 10.6-7 17l0 80c0 13.3 10.7 24 24 24l80 0c13.3 0 24-10.7 24-24l0-40 40 0c13.3 0 24-10.7 24-24l0-40 40 0c6.4 0 12.5-2.5 17-7l33.3-33.3c16.9 5.4 35 8.3 53.7 8.3zM376 96a40 40 0 1 1 0 80 40 40 0 1 1 0-80z"/></svg>
+        </span>
+        <div>
+          <h1>使用前必读：API Key 获取教程</h1>
+          <p class="sub">拿到激活码后，按本教程配置即可使用全部在线功能</p>
+        </div>
+      </div>
+
+      <div class="guide-intro">
+        <svg class="icon" viewBox="0 0 512 512" aria-hidden="true"><path d="M256 152a88 88 0 1 0 0-176 88 88 0 1 0 0 176zm0 298.7l0-149.3c16.3-6.8 32.9-13.7 49.7-20.7 39-16.2 80.8-24.6 123.1-24.6l19.2 0 0 160-19.2 0c-59.1 0-117.7 11.7-172.3 34.5l-.5 .2zM256 232l-25.1-10.5C184.1 202 133.9 192 83.2 192L48 192c-26.5 0-48 21.5-48 48L0 432c0 26.5 21.5 48 48 48l35.2 0c50.7 0 100.9 10 147.7 29.5l12.8 5.3c7.9 3.3 16.7 3.3 24.6 0l12.8-5.3c46.8-19.5 97-29.5 147.7-29.5l35.2 0c26.5 0 48-21.5 48-48l0-192c0-26.5-21.5-48-48-48l-35.2 0c-50.7 0-100.9 10-147.7 29.5L256 232z"/></svg>
+        <p>本软件的翻译和提取文本功能分别需要 DeepSeek 与 GLM-OCR API 的支持，请在软件设置里对应界面填写对应 API Key，其他功能可离线运行。</p>
+      </div>
+
+      <!-- 配置说明 -->
+      <section id="config" class="guide-section">
+        <h2>翻译模型配置说明</h2>
+        <p>在软件设置的翻译模型界面填写以下三项；OCR 模型界面推荐填写 GLM-OCR 的 API Key。</p>
+        <div class="config-table">
+          <div class="config-row">
+            <div class="row-main">
+              <span class="label">Base URL</span>
+              <span class="value">https://api.deepseek.com/v1</span>
+            </div>
+            <p class="note">使用 DeepSeek 时可填此地址；其他平台大模型需修改为对应地址</p>
+          </div>
+          <div class="config-row">
+            <div class="row-main">
+              <span class="label">API Key</span>
+              <span class="value">从 DeepSeek 开放平台获取</span>
+            </div>
+            <p class="note">获取方法见下方 DeepSeek 章节</p>
+          </div>
+          <div class="config-row">
+            <div class="row-main">
+              <span class="label">模型名</span>
+              <span class="value">deepseek-v4-flash / deepseek-v4-pro / deepseek-flash</span>
+            </div>
+            <p class="note">模型版本随时更新，需要以实际为准；其他平台需填写对应模型名</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- DeepSeek -->
+      <section id="deepseek" class="guide-section">
+        <h2>DeepSeek API Key 获取方法（翻译模型）</h2>
+        <p>用于软件的翻译功能，按以下四步操作即可拿到 API Key。</p>
+        <ol class="guide-steps">
+          <li>
+            <span class="step-badge">1</span>
+            <div>
+              <h3>进入 DeepSeek 开放平台
+                <a href="https://platform.deepseek.com/sign_in" target="_blank" rel="noopener noreferrer">
+                  platform.deepseek.com
+                  <svg class="icon" viewBox="0 0 512 512" aria-hidden="true"><path d="M290.4 19.8C295.4 7.8 307.1 0 320 0L480 0c17.7 0 32 14.3 32 32l0 160c0 12.9-7.8 24.6-19.8 29.6s-25.7 2.2-34.9-6.9L400 157.3 246.6 310.6c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L354.7 112 297.4 54.6c-9.2-9.2-11.9-22.9-6.9-34.9zM0 176c0-44.2 35.8-80 80-80l80 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-80 0c-8.8 0-16 7.2-16 16l0 256c0 8.8 7.2 16 16 16l256 0c8.8 0 16-7.2 16-16l0-80c0-17.7 14.3-32 32-32s32 14.3 32 32l0 80c0 44.2-35.8 80-80 80L80 512c-44.2 0-80-35.8-80-80L0 176z"/></svg>
+                </a>
+              </h3>
+              <p>打开 DeepSeek 开放平台登录页。</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-badge">2</span>
+            <div>
+              <h3>手机号验证码登录</h3>
+              <p>输入手机号，通过验证码形式登录，未注册将自动注册。</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-badge">3</span>
+            <div>
+              <h3>点击充值</h3>
+              <p>登录之后点击充值，进入充值页面完成账户充值。</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-badge">4</span>
+            <div>
+              <h3>创建 API Key</h3>
+              <p>点击 API keys，名称随便填，点击【创建】按钮，即可创建 API Key。</p>
+            </div>
+          </li>
+        </ol>
+        <div class="warning-box">
+          <svg class="icon" viewBox="0 0 512 512" aria-hidden="true"><path d="M256 0c14.7 0 28.2 8.1 35.2 21l216 400c6.7 12.4 6.4 27.4-.8 39.5S486.1 480 472 480L40 480c-14.1 0-27.2-7.4-34.4-19.5s-7.5-27.1-.8-39.5l216-400c7-12.9 20.5-21 35.2-21zm0 352a32 32 0 1 0 0 64 32 32 0 1 0 0-64zm0-192c-18.2 0-32.7 15.5-31.4 33.7l7.4 104c.9 12.5 11.4 22.3 23.9 22.3 12.6 0 23-9.7 23.9-22.3l7.4-104c1.3-18.2-13.1-33.7-31.4-33.7z"/></svg>
+          <p>此 API Key 只展示一次，请务必复制后妥善保存，否则只能重新生成新的。</p>
+        </div>
+      </section>
+
+      <!-- GLM-OCR -->
+      <section id="glm-ocr" class="guide-section">
+        <h2>GLM-OCR API Key 获取方法（OCR 模型）</h2>
+        <p>用于软件的提取文本功能，推荐使用 GLM-OCR，按以下三步操作。</p>
+        <ol class="guide-steps">
+          <li>
+            <span class="step-badge">1</span>
+            <div>
+              <h3>进入智谱 BigModel 平台
+                <a href="https://open.bigmodel.cn/login" target="_blank" rel="noopener noreferrer">
+                  open.bigmodel.cn
+                  <svg class="icon" viewBox="0 0 512 512" aria-hidden="true"><path d="M290.4 19.8C295.4 7.8 307.1 0 320 0L480 0c17.7 0 32 14.3 32 32l0 160c0 12.9-7.8 24.6-19.8 29.6s-25.7 2.2-34.9-6.9L400 157.3 246.6 310.6c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L354.7 112 297.4 54.6c-9.2-9.2-11.9-22.9-6.9-34.9zM0 176c0-44.2 35.8-80 80-80l80 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-80 0c-8.8 0-16 7.2-16 16l0 256c0 8.8 7.2 16 16 16l256 0c8.8 0 16-7.2 16-16l0-80c0-17.7 14.3-32 32-32s32 14.3 32 32l0 80c0 44.2-35.8 80-80 80L80 512c-44.2 0-80-35.8-80-80L0 176z"/></svg>
+                </a>
+              </h3>
+              <p>打开智谱 BigModel 平台登录页，支持 CCF 会员授权登录。</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-badge">2</span>
+            <div>
+              <h3>进行账户充值</h3>
+              <p>首次可自定义金额，充 10 元即可。</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-badge">3</span>
+            <div>
+              <h3>财务 → API Key</h3>
+              <p>点击财务 → API Key，点击确定，即可生成 API Key。</p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <!-- 目录 -->
+      <nav class="toc">
+        <h2>本页目录</h2>
+        <ul>
+          <li><a href="#config">翻译模型配置说明</a></li>
+          <li><a href="#deepseek">DeepSeek API Key 获取方法（翻译模型）</a></li>
+          <li><a href="#glm-ocr">GLM-OCR API Key 获取方法（OCR 模型）</a></li>
+        </ul>
+      </nav>
+
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <p>PDFReader 激活码获取 · 交流群 1121668176</p>
+    <p class="footer-link">
+      <a href="guide.html">使用前必读：API Key 获取教程</a>
+    </p>
+    <p class="footer-beian">
+      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">冀ICP备2026043906号</a>
+    </p>
+  </footer>
+
+</body>
+</html>
