@@ -2,6 +2,21 @@
 
 Windows 上的 PDF 阅读与翻译桌面应用（Rust + Tauri 2 + PDF.js）。
 
+## 下载
+
+到 [Releases](https://github.com/Wulongkun/PDFReader/releases/latest) 下载最新版安装包（解压即用，绿色免安装，无需 Python）：
+
+| 文件 | 适用 |
+| --- | --- |
+| `PDFReader-online-x64.zip` | 64 位系统，联网版（需系统已装 WebView2） |
+| `PDFReader-online-x86.zip` | 32 位系统，联网版（需系统已装 WebView2） |
+| `PDFReader-standalone-x64.zip` | 64 位系统，自包含版（内置 WebView2 安装器） |
+| `PDFReader-standalone-x86.zip` | 32 位系统，自包含版（内置 WebView2 安装器） |
+
+> 仅 x64 版本包含「原生 Word 导出」的 pdfomml 后端；导出 Word / 翻译需联网或本地模型。
+
+解压后运行 `PDFReader.exe` 即可。激活码见应用内「获取激活码」入口。
+
 ## 技术栈
 
 - **Tauri 2** + 系统 WebView2 渲染前端
