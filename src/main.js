@@ -130,6 +130,48 @@ function requirePro() {
   return false;
 }
 
+// 缺少 API Key：弹窗提示 + 教程链接，可直达设置（替代原来仅状态栏一行字）。
+function showNoKeyDialog(msg) {
+  $('no-key-msg').textContent = msg;
+  $('no-key').showModal();
+}
+
+function closeNoKeyDialog() {
+  $('no-key').close();
+}
+
+async function noKeyOpenSettings() {
+  closeNoKeyDialog();
+  await openSettings();
+}
+
+// 导出前统一校验密钥：缺 Key 弹窗并返回 false，否则返回 true。
+// mode：'native'（导出 Word，按识别引擎查 OCR Key）/ 'translated'（导出译文，查翻译 Key）。
+async function ensureExportKey(mode) {
+  try {
+    const cfg = await invoke('get_config');
+    if (mode === 'translated') {
+      if (!cfg.translate || !cfg.translate.api_key) {
+        showNoKeyDialog('请先在「设置」里填写翻译 API Key，再导出译文');
+        return false;
+      }
+      return true;
+    }
+    const o = cfg.ocr || {};
+    const w = cfg.word || {};
+    const engine = o.mode === 'llm' ? 'vlm' : o.mode === 'glm' ? 'glm-ocr' : 'null';
+    if (engine === 'vlm' && !(w.api_key || w.api_base)) {
+      showNoKeyDialog('请先在「设置 → OCR 模型」填写 VLM 的 API Key / Base URL；或改用本地引擎（离线可用、精度较低）');
+      return false;
+    }
+    if (engine === 'glm-ocr' && !w.glm_api_key) {
+      showNoKeyDialog('未填写 GLM-OCR Key。请先在「设置 → OCR 模型」填写；或改用本地引擎（离线可用、精度较低）');
+      return false;
+    }
+  } catch { /* 读配置失败不阻断导出，交给后端报错 */ }
+  return true;
+}
+
 // 导出按钮不再用锁图标标识 Pro：始终显示正常图标，未激活时点击才弹出激活提示。
 function updateProBadges() {
   // 保留占位，供将来需要按 Pro 状态调整界面时使用。
@@ -2471,6 +2513,8 @@ async function extractCurrentPage(withOcr, pageNo) {
 
   const cfg = await invoke('get_config');
   const cloud = cfg.ocr.mode === 'glm' || cfg.ocr.mode === 'llm';
+  // 扫描页走云端 OCR 时，缺 Key 直接弹窗（否则会落到后端报错、只显示状态栏一行字）。
+  if (cloud && !(await ensureExportKey('native'))) return [];
   const scale = ocrScale(page);
   const { dataUrl: png } = await pageToOcrImage(page, cloud);
   const result = await invoke('ocr_image', { request: { png_data_url: png } });
@@ -2571,6 +2615,7 @@ async function exportText() {
   const btn = $('btn-export');
   btn.disabled = true;
   try {
+    if (!(await ensureExportKey('native'))) return;
     const cfg = await invoke('get_config');
     let full;
     if (cfg.ocr.mode === 'llm') {
@@ -2649,11 +2694,7 @@ async function exportWordTranslatedNative(pages) {
   const btn = $('btn-export-word-tr');
   btn.disabled = true;
   try {
-    const cfg = await invoke('get_config');
-    if (!cfg.translate || !cfg.translate.api_key) {
-      setStatus('请先在「设置」里填写翻译 API Key，再导出译文');
-      return;
-    }
+    if (!(await ensureExportKey('translated'))) return;
     const base = (state.name || '文档').replace(/\.pdf$/i, '');
     const name = base + pageRangeSuffix(pages) + '（译文）.docx';
     setStatus('正在翻译并导出…');
@@ -2704,19 +2745,7 @@ async function exportWordNative(pages) {
   const btn = $('btn-export-word');
   btn.disabled = true;
   try {
-    const cfg = await invoke('get_config');
-    const o = cfg.ocr || {};
-    const w = cfg.word || {};
-    // 统一识别引擎由 ocr.mode 决定，映射回公式识别引擎的取值（llm→vlm、glm→glm-ocr、其余→null）。
-    const engine = o.mode === 'llm' ? 'vlm' : o.mode === 'glm' ? 'glm-ocr' : 'null';
-    if (engine === 'vlm' && !(w.api_key || w.api_base)) {
-      setStatus('请先在「设置 → OCR 模型」里填写 VLM 的 API Key / Base URL，或改用本地引擎');
-      return;
-    }
-    if (engine === 'glm-ocr' && !w.glm_api_key) {
-      setStatus('未填写 GLM-OCR Key。可前往 http://yuanjingzh.cn/activate/ 获取，或在「设置 → OCR 模型」改用本地引擎（离线，精度较低）');
-      return;
-    }
+    if (!(await ensureExportKey('native'))) return;
     const base = (state.name || '文档').replace(/\.pdf$/i, '');
     const name = base + pageRangeSuffix(pages) + '.docx';
     setStatus('正在导出…');
@@ -2735,9 +2764,10 @@ async function exportWordNative(pages) {
 
 // 导出 Word（原生 / 译文）前先让用户选页码范围（留空 = 全部）。
 // mode：'native'（导出 Word）或 'translated'（导出译文），提交时据此分发。
-function openExportRange(mode) {
+async function openExportRange(mode) {
   if (!state.pdfDoc) return;
   if (!requirePro()) return;
+  if (!(await ensureExportKey(mode))) return;
   state.exportRangeMode = mode;
   $('export-native-range').value = '';
   $('export-native-total').textContent = state.pdfDoc.numPages;
@@ -3146,6 +3176,13 @@ function toggleToc() {
 }
 
 async function translate() {
+  // 缺翻译 Key 直接弹窗（先于文本检查，一按翻译就提示，不依赖是否已选中文字）。
+  let cfg;
+  try { cfg = await invoke('get_config'); } catch { cfg = null; }
+  if (!cfg || !cfg.translate || !cfg.translate.api_key) {
+    showNoKeyDialog('请先在「设置」里填写翻译 API Key，再开始翻译');
+    return;
+  }
   const text = getSelectedText() || state.extractedText;
   if (!text) { setStatus('请先打开 PDF、提取文字，或选中一段文字'); return; }
   showSidebar();
@@ -3174,7 +3211,6 @@ async function translate() {
     : null;
 
   try {
-    const cfg = await invoke('get_config');
     const result = await invoke('translate_stream', {
       request: {
         text,
@@ -3882,6 +3918,8 @@ function bindEvents() {
   $('btn-cancel-extract').addEventListener('click', closeExtractPages);
   $('activate-form').addEventListener('submit', (e) => { e.preventDefault(); submitActivate(); });
   $('btn-cancel-activate').addEventListener('click', () => $('activate').close());
+  $('btn-no-key-close').addEventListener('click', closeNoKeyDialog);
+  $('btn-no-key-settings').addEventListener('click', noKeyOpenSettings);
   $('btn-activate').addEventListener('click', async () => {
     const code = $('license-code').value.trim();
     if (!code) { setStatus('请输入激活码'); return; }
