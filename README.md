@@ -56,6 +56,8 @@ src-tauri/
 
 ## 运行
 
+> ⚠️ **依赖说明**：本仓库通过相对路径 `../../pdfomml/rust/pdfomml` 引用 pdfomml（PDF→Word 原生公式引擎），该源码为私有、**不在本仓库内**。仅克隆本仓库无法直接编译——需在同级目录放置 pdfomml 仓库后，`cargo tauri build` 才能通过。
+
 ```bash
 # 1. 安装 Tauri CLI（二选一）
 cargo install tauri-cli --version "^2"
