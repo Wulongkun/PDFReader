@@ -409,6 +409,8 @@ dialog input:focus, dialog select:focus {
 dialog label.check { flex-direction: row; align-items: center; gap: 8px; }
 dialog label.check input[type="checkbox"] { width: auto; padding: 0; border: none; }
 dialog .hint { font-size: 12px; color: #64748b; margin: 0; line-height: 1.55; }
+dialog .hint a { color: #3b82f6; text-decoration: underline; }
+dialog .hint a:hover { text-decoration: none; }
 dialog footer {
   display: flex;
   justify-content: flex-end;
@@ -452,6 +454,7 @@ dialog button[type="submit"]:hover { background: #2563eb; border-color: #2563eb;
 #toc-panel.collapsed { margin-left: -260px; }
 .toc-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
@@ -461,7 +464,7 @@ dialog button[type="submit"]:hover { background: #2563eb; border-color: #2563eb;
   border-bottom: 1px solid rgba(226, 232, 240, 0.6);
   flex-shrink: 0;
 }
-.toc-head button {
+#btn-toc-collapse {
   font-size: 12px;
   padding: 2px 8px;
   display: inline-flex;
@@ -486,8 +489,8 @@ dialog button[type="submit"]:hover { background: #2563eb; border-color: #2563eb;
 .toc-item.active { background: #dbeafe; }
 .toc-title { flex: 1; word-break: break-word; }
 .toc-page { color: #94a3b8; font-size: 12px; flex-shrink: 0; }
-.toc-generate { margin: 8px 12px; padding: 6px 10px; font-size: 13px; }
-.toc-hint { font-size: 12px; color: #64748b; margin: 8px 12px; }
+.toc-generate { flex-basis: 100%; margin: 8px 0 0; padding: 6px 0; border: none; font-size: 13px; font-weight: 400; justify-content: flex-start; text-align: left; }
+.toc-hint { flex-basis: 100%; font-size: 12px; color: #64748b; margin: 8px 0 0; font-weight: 400; text-align: left; }
 
 /* 文本层：覆盖在 canvas 上，文字透明但可选择/复制（非扫描 PDF 可直接选中正文）。
    扫描页无文本层，得到空层，自然不可选择。 */
@@ -560,6 +563,13 @@ body.rtl #sidebar {
   border-right: 1px solid rgba(226, 232, 240, 0.75);
 }
 body.rtl #viewer { order: 1; }
+/* 竖排古籍：上下留白改由适应高度的百分比预留控制，这里只保留少量内边距作保底，
+   避免 viewer 固定 20px 上下内边距导致小窗口下留白过大。 */
+body.rtl #viewer {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  scroll-padding-top: 8px;
+}
 
 /* 目录悬浮层：绝对定位盖在 PDF 上，不再参与布局 */
 body.rtl #toc-panel {
@@ -764,34 +774,41 @@ body.rtl.toc-double #btn-toc-collapse { display: none; }
 body.rtl.toc-top #toc-list .toc-hint,
 body.rtl.toc-double #toc-list .toc-hint { display: none; }
 /* 竖排无书签：提示与按钮文字竖排，放在「目录」标题正下方、靠右，从上往下排（提示在上、按钮在下）。
-   两者同宽（26px，与「目录」列一致）并各自水平居中内容，保证提示与按钮同轴对齐。 */
+   两者同宽（26px）并各自水平居中内容；right 对齐「目录」标题列中心（8px 内边距 + 15px 图标/2），
+   使提示与按钮的竖排文字和顶部「目录」二字落在同一竖直轴线上。 */
 body.rtl.toc-top #toc-hint,
 body.rtl.toc-double #toc-hint {
   position: absolute;
-  right: 8px;
+  right: 2.5px;
   top: 66px;
   z-index: 23;
   margin: 0;
   width: 26px;
-  display: flex;
-  align-items: center;      /* 竖排下交叉轴=水平，水平居中 */
-  justify-content: center;
+  display: grid;
+  place-items: center;      /* 竖排文字在固定 26px 列内水平居中（grid 对竖排居中更稳） */
   writing-mode: vertical-rl;
   text-orientation: mixed;
 }
+body.rtl.toc-double #toc-hint { right: 4px; }
+/* 翻译进行中：进度条顶替提示位，把提示藏起来（用 visibility 保留占位、不干扰 display 切换）。 */
+body.rtl.toc-top #toc-hint.progressing,
+body.rtl.toc-double #toc-hint.progressing { visibility: hidden; }
 body.rtl.toc-top .toc-generate,
 body.rtl.toc-double .toc-generate {
   position: absolute;
-  right: 8px;
+  right: 2.5px;
   bottom: 40px;
   z-index: 23;
   margin: 0;
   width: 26px;
+  display: inline-flex;
+  align-items: center;      /* 竖排下交叉轴=水平，水平居中 */
   justify-content: center;
   writing-mode: vertical-rl;
   text-orientation: mixed;
   padding: 10px 3px;
 }
+body.rtl.toc-double .toc-generate { right: 4px; }
 /* 竖排按钮图标缩小、宽度收敛到与「目录」标题列一致，不超出侧栏范围。 */
 body.rtl.toc-top .toc-generate .icon,
 body.rtl.toc-double .toc-generate .icon {
@@ -799,14 +816,14 @@ body.rtl.toc-double .toc-generate .icon {
   height: 13px;
 }
 
-/* 竖排无书签：翻译全文时的竖条进度条，与上方排版提示、下方生成按钮同列居中（右 8px 处 26px 列的中心）。 */
+/* 竖排无书签：翻译全文时的竖条进度条，顶替提示位（与提示、下方生成按钮同列居中）。 */
 .toc-progress { display: none; }
 body.rtl.toc-top .toc-progress,
 body.rtl.toc-double .toc-progress {
   display: block;
   position: absolute;
-  right: 19px;              /* 26px 列中心（8 + 26/2 = 21）向左偏移条宽一半 2px */
-  top: 128px;
+  right: 13.5px;             /* 与「目录」标题列中心对齐（2.5 + 26/2 = 15.5，再左偏条宽一半 2px） */
+  top: 66px;
   width: 4px;
   height: 110px;
   border-radius: 2px;
@@ -987,7 +1004,13 @@ body.shelf-mode main { display: none; }
   font-size: 16px;
   font-weight: 700;
   color: var(--text);
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 2px 6px;
+  margin: -2px -6px;
+  transition: background 0.12s;
 }
+.shelf-title:hover { background: var(--hover); }
 .shelf-title .icon { width: 20px; height: 20px; color: var(--accent); }
 .shelf-breadcrumb {
   display: inline-flex;
@@ -1009,6 +1032,7 @@ body.shelf-mode main { display: none; }
 .crumb:hover { background: var(--hover); }
 .crumb-sep { color: var(--text-faint); }
 .crumb-cur { color: var(--text); font-weight: 600; white-space: nowrap; }
+.shelf-breadcrumb.hidden { display: none; }
 .shelf-status {
   font-size: 12px;
   color: #b91c1c;
@@ -1129,9 +1153,9 @@ body.shelf-mode main { display: none; }
   position: absolute;
   top: 12px;
   right: 12px;
-  width: 28px;
-  height: 28px;
-  padding: 4px;
+  width: 24px;
+  height: 24px;
+  padding: 3px;
   border: none;
   background: rgba(255, 255, 255, 0.88);
   border-radius: 50%;
@@ -1141,8 +1165,18 @@ body.shelf-mode main { display: none; }
   align-items: center;
   justify-content: center;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  opacity: 0;
+  transform: scale(0.7);
+  pointer-events: none;
+  transition: opacity 0.15s, transform 0.15s, color 0.12s;
 }
-.fav-star .icon { width: 16px; height: 16px; }
+.shelf-card:hover .fav-star,
+.fav-star:focus-visible {
+  opacity: 1;
+  transform: scale(1);
+  pointer-events: auto;
+}
+.fav-star .icon { width: 14px; height: 14px; }
 .fav-star:hover { color: #f59e0b; }
 .fav-star.on { color: #f59e0b; }
 .fav-star.on .icon { fill: currentColor; }
@@ -1205,11 +1239,6 @@ main.view-in {
 }
 
 /* ===== 授权（Pro 门控） ===== */
-
-/* 未激活：主图标换成小锁（提示需激活）；激活后完全无标识，与普通功能无异。 */
-.toolbar .lock-icon { display: none; width: 15px; height: 15px; opacity: 0.85; }
-.toolbar button.locked .lock-icon { display: inline-block; }
-.toolbar button.locked > .icon:not(.lock-icon) { display: none; }
 
 /* 设置里的授权区块。 */
 .license-box {
@@ -1294,10 +1323,29 @@ main.view-in {
   font-weight: 700;
   color: #334155;
 }
+/* 「OCR 模型」组里区分「公式识别」与「文字提取」两个子区块的小标题。 */
+.settings-subtitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  margin-top: 2px;
+}
+/* 按引擎类型动态显示 / 隐藏的 API 字段块，左侧竖线收拢成一组。 */
+.engine-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+.engine-sub.hidden { display: none; }
+/* 「OCR 模型」等按 OCR 方式动态显示 / 隐藏的字段行。 */
+.settings-group label.hidden { display: none; }
+.settings-group .hint.hidden { display: none; }
 .about-box { padding: 10px 0 2px; text-align: center; color: var(--text-muted); }
 .about-box .about-name { font-size: 15px; font-weight: 700; color: var(--text); margin: 0 0 2px; }
 .about-box .about-ver { font-size: 12px; margin: 0; }
-.about-box .hint { margin-top: 6px; }
-.about-box .btn-manual { margin-top: 12px; }
+/* 「配置路径」提示与「用户手册」按钮移到了授权框下方，按钮不随面板拉伸。 */
+.settings-panel[data-panel="about"] > .btn-manual { align-self: flex-start; }
 
 

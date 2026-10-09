@@ -41,6 +41,17 @@ const EXTRACT_PROMPT: &str = "你是学术论文版面解析器。识别图片�
 3. figures：页面里的插图（图表、示意图、坐标图等），bbox 是插图外接框的 0~1000 归一化坐标 [x0,y0,x1,y1]（左上角 x、左上角 y、右下角 x、右下角 y，相对整页图片宽高归一化到 0~1000），caption 是图题（如 \"Fig. 2. xxx\"）；没有插图就给空数组 []。\
 只输出这一页的内容。";
 
+/// 识别 API 错误响应里的「额度 / 余额用尽」信号，返回充值提示；无则返回 `None`。
+/// 各家返回格式不一：DeepSeek 402「Insufficient Balance」、OpenAI 429「exceeded quota」、
+/// 智谱「余额不足，请充值」。统一按正文关键词识别，不依赖具体状态码。
+fn recharge_hint(detail: &str) -> Option<&'static str> {
+    let lower = detail.to_ascii_lowercase();
+    let en = ["insufficient", "balance", "quota", "billing"]
+        .iter().any(|k| lower.contains(k));
+    let zh = ["余额", "额度", "充值", "欠费"].iter().any(|k| detail.contains(k));
+    (en || zh).then_some("模型额度已用完，请前往服务商充值后重试")
+}
+
 #[derive(Clone)]
 pub struct TranslateClient {
     http: Client,
@@ -228,12 +239,12 @@ impl TranslateClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let detail = resp.text().await.unwrap_or_default();
-            let hint = match status.as_u16() {
+            let hint = recharge_hint(&detail).unwrap_or_else(|| match status.as_u16() {
                 429 => "请求过于频繁（限流），请稍后重试",
                 401 => "GLM-OCR API Key 无效或未授权",
                 400 => "请求被拒绝（图片格式或大小不符合要求）",
                 _ => "服务返回错误",
-            };
+            });
             return Err(anyhow!("{hint}（HTTP {status}）：{detail}"));
         }
 
@@ -244,7 +255,11 @@ impl TranslateClient {
             return Ok(collapse_soft_newlines(&parsed.md_results));
         }
         if let Some(code) = parsed.code {
-            return Err(anyhow!("GLM-OCR 返回错误（code {code}）：{}", parsed.message));
+            return Err(anyhow!(
+                "{}（code {code}）：{}",
+                recharge_hint(&parsed.message).unwrap_or("GLM-OCR 返回错误"),
+                parsed.message
+            ));
         }
         Err(anyhow!("GLM-OCR 返回结果为空"))
     }
@@ -395,13 +410,13 @@ x_i → <m:oMath><m:sSub><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sub><m:r><m:t>i</m
         if !resp.status().is_success() {
             let status = resp.status();
             let detail = resp.text().await.unwrap_or_default();
-            let hint = match status.as_u16() {
+            let hint = recharge_hint(&detail).unwrap_or_else(|| match status.as_u16() {
                 429 => "请求过于频繁（限流），请稍后重试",
                 401 => "API Key 无效或未授权",
                 404 => "接口地址或模型名不正确",
                 400 => "请求被拒绝（可能是该模型不支持图片输入）",
                 _ => "服务返回错误",
-            };
+            });
             return Err(anyhow!("{hint}（HTTP {status}）：{detail}"));
         }
 
@@ -460,13 +475,13 @@ x_i → <m:oMath><m:sSub><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sub><m:r><m:t>i</m
         if !resp.status().is_success() {
             let status = resp.status();
             let detail = resp.text().await.unwrap_or_default();
-            let hint = match status.as_u16() {
+            let hint = recharge_hint(&detail).unwrap_or_else(|| match status.as_u16() {
                 429 => "请求过于频繁（限流），请稍后重试",
                 401 => "API Key 无效或未授权",
                 404 => "接口地址或模型名不正确",
                 400 => "请求被拒绝（可能是该模型不支持图片输入）",
                 _ => "服务返回错误",
-            };
+            });
             return Err(anyhow!("{hint}（HTTP {status}）：{detail}"));
         }
 

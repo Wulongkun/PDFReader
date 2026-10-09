@@ -66,19 +66,19 @@
 
       <div class="tool-group">
         <button id="btn-extract" class="icon-btn" title="提取文字" disabled><svg class="icon"><use href="#icon-extract-text"/></svg></button>
-        <button id="btn-extract-pages" class="icon-btn" title="提取页面为 PDF" disabled><svg class="icon"><use href="#icon-extract-pages"/></svg></button>
         <button id="btn-translate" class="icon-btn" title="翻译选中文字" disabled><svg class="icon"><use href="#icon-translate"/></svg></button>
-        <button id="btn-export" class="icon-btn" title="导出文本" disabled><svg class="icon"><use href="#icon-export-text"/></svg><svg class="icon lock-icon"><use href="#icon-lock"/></svg></button>
+        <button id="btn-extract-pages" class="icon-btn" title="提取页面为 PDF" disabled><svg class="icon"><use href="#icon-extract-pages"/></svg></button>
+        <button id="btn-export" class="icon-btn" title="导出文本" disabled><svg class="icon"><use href="#icon-export-text"/></svg></button>
       </div>
 
       <span class="spacer"></span>
 
       <div class="tool-group main-actions">
         <button id="btn-export-word" class="btn btn-primary" disabled>
-          <svg class="icon"><use href="#icon-export-word"/></svg><svg class="icon lock-icon"><use href="#icon-lock"/></svg><span class="btn-text">导出 Word</span>
+          <svg class="icon"><use href="#icon-export-word"/></svg><span class="btn-text">导出 Word</span>
         </button>
         <button id="btn-export-word-tr" class="btn btn-primary" disabled>
-          <svg class="icon"><use href="#icon-export-word-tr"/></svg><svg class="icon lock-icon"><use href="#icon-lock"/></svg><span class="btn-text">导出译文</span>
+          <svg class="icon"><use href="#icon-export-word-tr"/></svg><span class="btn-text">导出译文</span>
         </button>
       </div>
 
@@ -98,7 +98,7 @@
 
     <div id="bookshelf">
       <header class="shelf-header">
-        <span class="shelf-title"><svg class="icon"><use href="#icon-home"/></svg>书架</span>
+        <span id="shelf-title" class="shelf-title" role="button" tabindex="0" title="回到书架"><svg class="icon"><use id="shelf-title-icon" href="#icon-home"/></svg><span id="shelf-title-text">书架</span></span>
         <span id="shelf-breadcrumb" class="shelf-breadcrumb"></span>
         <span id="shelf-status" class="shelf-status"></span>
         <span class="spacer"></span>
@@ -109,7 +109,6 @@
       </header>
       <div class="shelf-body">
         <section id="shelf-section" class="shelf-section">
-          <h2 class="shelf-h2"><svg class="icon"><use href="#icon-home"/></svg>书架</h2>
           <div id="shelf-grid" class="shelf-grid"></div>
           <p id="shelf-empty" class="shelf-empty">书架还是空的，点击「添加书籍」或「添加文件夹」开始整理。</p>
         </section>
@@ -129,6 +128,8 @@
         <header class="toc-head">
           <span class="h3-label"><svg class="icon"><use href="#icon-toc"/></svg>目录</span>
           <button id="btn-toc-collapse" type="button" title="收起目录"><svg class="icon"><use href="#icon-close"/></svg></button>
+          <p id="toc-hint" class="toc-hint" style="display:none">本文档没有书签目录</p>
+          <button id="toc-generate" class="toc-generate" style="display:none">从标题生成目录</button>
         </header>
         <div id="toc-list" class="toc-list"></div>
         <div id="toc-pager" class="toc-pager">
@@ -136,9 +137,7 @@
           <span id="toc-page-info">1 / 1</span>
           <button id="toc-page-next" type="button" title="下一页"><svg class="icon"><use href="#icon-next"/></svg></button>
         </div>
-        <p id="toc-hint" class="toc-hint" style="display:none">竖排</p>
         <div id="toc-progress" class="toc-progress" style="display:none"><div class="toc-progress-fill"></div></div>
-        <button id="toc-generate" class="toc-generate" style="display:none"><svg class="icon"><use href="#icon-toc"/></svg>从标题生成目录</button>
       </aside>
       <div id="viewer">
         <div id="pdf-pages"></div>
@@ -187,7 +186,7 @@
             <input id="cfg-api-key" type="password" placeholder="sk-..." />
           </label>
           <label>模型
-            <input id="cfg-model" type="text" placeholder="deepseek-chat" />
+            <input id="cfg-model" type="text" placeholder="deepseek-v4-flash" />
           </label>
           <label>目标语言
             <input id="cfg-target-lang" type="text" value="中文" />
@@ -196,17 +195,42 @@
         </div>
         <div class="settings-group">
           <span class="settings-group-title">OCR 模型</span>
-          <label>OCR 方式
-            <select id="cfg-ocr-mode">
-              <option value="local">本地（Windows 自带，离线）</option>
-              <option value="llm">大模型（视觉多模态，联网）</option>
-              <option value="glm">GLM-OCR（智谱，版面解析）</option>
+
+          <label>识别引擎
+            <select id="cfg-engine">
+              <option value="local">本地（离线，公式保留为图片）</option>
+              <option value="llm">大模型（VLM，OpenAI 兼容）</option>
+              <option value="glm" selected>GLM-OCR（智谱）</option>
             </select>
           </label>
-          <label>GLM-OCR API Key（智谱 BigModel）
-            <input id="cfg-ocr-glm-key" type="password" placeholder="用于 GLM-OCR 方式，独立于翻译 Key" />
+
+          <span class="settings-subtitle">公式识别（导出 Word）</span>
+          <label>公式格式
+            <select id="cfg-word-format">
+              <option value="omml">OMML（Word 原生公式）</option>
+              <option value="mathtype">MathType 对象</option>
+            </select>
           </label>
-          <label>OCR 语言（本地）
+          <div id="vlm-fields" class="engine-sub">
+            <label>VLM API Base URL
+              <input id="cfg-word-base" type="url" placeholder="https://api.deepseek.com/v1" />
+            </label>
+            <label>VLM API Key
+              <input id="cfg-word-key" type="password" placeholder="sk-..." />
+            </label>
+            <label>VLM 模型
+              <input id="cfg-word-model" type="text" placeholder="例如 qwen2.5-vl / gpt-4o" />
+            </label>
+          </div>
+          <div id="glm-fields" class="engine-sub">
+            <label>GLM-OCR API Key（智谱 BigModel）
+              <input id="cfg-glm-key" type="password" placeholder="公式识别与文字提取共用" />
+            </label>
+            <p id="glm-key-hint" class="hint">未填写 Key 将无法识别。可前往 <a href="http://yuanjingzh.cn/activate/" target="_blank" rel="noopener">http://yuanjingzh.cn/activate/</a> 获取，或改选「本地」引擎（离线、精度较低）。</p>
+          </div>
+
+          <span class="settings-subtitle">文字提取 OCR（导出文本 / 译文）</span>
+          <label id="cfg-ocr-lang-row">OCR 语言
             <select id="cfg-ocr-lang">
               <option value="auto">跟随系统</option>
               <option value="zh-Hans">简体中文</option>
@@ -216,52 +240,51 @@
               <option value="ko-KR">韩语</option>
             </select>
           </label>
-          <label>OCR 模型（大模型）
+          <label id="cfg-ocr-model-row">OCR 模型
             <input id="cfg-ocr-model" type="text" placeholder="留空则用上面的模型" />
           </label>
-          <label>OCR 清晰度（大模型）
+          <label id="cfg-ocr-detail-row">OCR 清晰度
             <select id="cfg-ocr-detail">
               <option value="auto">自动（原图）</option>
               <option value="high">高（原图）</option>
               <option value="low">低（512px，省 token）</option>
             </select>
           </label>
-          <p class="hint">大模型 OCR 需使用支持图片输入的视觉模型（如通义 VL、Kimi 视觉、GPT-4V、deepseek-v4-flash-vision-exp 等）。</p>
+          <p class="hint">识别引擎同时作用于公式识别与文字提取：本地零依赖（公式保留为图片、不可编辑）；大模型 / GLM-OCR 需联网密钥。GLM-OCR 的 Key 两种识别共用。公式格式选 MathType 时需本机安装 MathType 才能双击编辑。</p>
         </div>
             </section>
             <section class="settings-panel" data-panel="layout">
-        <label class="check">
-          <input id="cfg-ocr-vertical" type="checkbox" />
-          竖排古籍：OCR 前旋转 90°（修复竖排文字乱序/换行）
+        <label>排版方向
+          <select id="cfg-orientation">
+            <option value="auto">自动</option>
+            <option value="horizontal">横排</option>
+            <option value="vertical">竖排</option>
+          </select>
         </label>
-        <label class="check">
-          <input id="cfg-viewer-rtl" type="checkbox" />
-          竖排古籍：水平从右往左连续阅读（第 1 页在最右，向右拖动往后读）
-        </label>
-        <label>竖排目录位置（悬浮在 PDF 上）
+        <label>竖排目录位置
           <select id="cfg-toc-position">
             <option value="top">顶部</option>
             <option value="left">左侧</option>
-            <option value="double">双栏（上下两栏）</option>
+            <option value="double">双栏</option>
           </select>
         </label>
             </section>
             <section class="settings-panel" data-panel="about">
-        <section class="license-box">
-          <span class="h3-label"><svg class="icon"><use href="#icon-lock"/></svg>Pro 授权</span>
-          <p id="license-status" class="license-status">免费版</p>
-          <div class="license-row">
-            <input id="license-code" type="text" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" />
-            <button type="button" id="btn-activate" class="btn">激活</button>
-          </div>
-          <p class="hint">购买后联网激活一次，绑定本机；导出 Word / 文本 / 译文为 Pro 版专属。</p>
-        </section>
               <div class="about-box">
                 <p class="about-name">PDFReader</p>
                 <p class="about-ver">版本 0.1.0</p>
-                <p class="hint">配置保存到 %APPDATA%/PDFReader/config.json</p>
-                <button type="button" id="btn-manual" class="btn btn-manual"><svg class="icon"><use href="#icon-book"/></svg>用户手册</button>
               </div>
+              <section class="license-box">
+                <span class="h3-label"><svg class="icon"><use href="#icon-lock"/></svg>Pro 授权</span>
+                <p id="license-status" class="license-status">免费版</p>
+                <div class="license-row">
+                  <input id="license-code" type="text" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" />
+                  <button type="button" id="btn-activate" class="btn">激活</button>
+                </div>
+                <p class="hint">导出 Word / 文本 / 译文为 Pro 版专属。可输入激活码并联网激活。激活码获取方式：<a href="http://yuanjingzh.cn/activate/" target="_blank" rel="noopener">http://yuanjingzh.cn/activate/</a>。可加入群组反馈问题，提出改进意见。QQ群号：1121668176。</p>
+              </section>
+              <p class="hint">配置保存到 %APPDATA%/PDFReader/config.json</p>
+              <button type="button" id="btn-manual" class="btn btn-manual"><svg class="icon"><use href="#icon-book"/></svg>用户手册</button>
             </section>
           </div>
         </div>
@@ -274,8 +297,8 @@
 
     <dialog id="activate">
       <form id="activate-form">
-        <h2>激活 Pro</h2>
-        <p class="hint">导出 Word / 文本 / 译文为 Pro 版专属。输入激活码并联网激活一次（绑定本机）。</p>
+        <h2>支持作者开发，激活 Pro 授权</h2>
+        <p class="hint">导出 Word / 文本 / 译文为 Pro 版专属。可输入激活码并联网激活。激活码获取方式：<a href="http://yuanjingzh.cn/activate/" target="_blank" rel="noopener">http://yuanjingzh.cn/activate/</a>。可加入群组反馈问题，提出改进意见。QQ群号：1121668176。</p>
         <label>激活码
           <input id="activate-code" type="text" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" />
         </label>
@@ -297,6 +320,20 @@
         <footer>
           <button type="submit"><svg class="icon"><use href="#icon-extract-pages"/></svg>提取</button>
           <button type="button" id="btn-cancel-extract"><svg class="icon"><use href="#icon-close"/></svg>取消</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="export-native-range-dialog">
+      <form id="export-native-range-form">
+        <h2>导出 Word</h2>
+        <label>页码范围
+          <input id="export-native-range" type="text" placeholder="留空导出全部，如 1-3,5,7-9" />
+        </label>
+        <p class="hint">共 <span id="export-native-total">0</span> 页。留空导出全部；支持逗号分隔的单页或区间，例如 <code>1-3,5,8</code>。</p>
+        <footer>
+          <button type="submit"><svg class="icon"><use href="#icon-export-word"/></svg>导出</button>
+          <button type="button" id="btn-cancel-export-native"><svg class="icon"><use href="#icon-close"/></svg>取消</button>
         </footer>
       </form>
     </dialog>

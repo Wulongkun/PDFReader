@@ -2,6 +2,11 @@
 //!
 //! 把 MTEF 字节流包成含单个 `Equation Native` 流的复合文档（`oleObject*.bin`），
 //! 作为 MathType OLE 对象嵌入 `.docx`。逐字节移植自 omml-converter 的 `ole.py`。
+//!
+//! 注意：OMML 接入导出后，本模块已不再被导出路径调用，保留作为 MathType OLE 的兜底实现。
+
+// MathType OLE 兜底实现；导出已改用 OMML（见 super::omml），故抑制 dead_code 告警。
+#![allow(dead_code)]
 
 const SECTOR: usize = 512;
 const FREESECT: u32 = 0xFFFF_FFFF;

@@ -782,101 +782,6 @@ pub fn is_trailing_punct(s: &str) -> bool {
             .all(|ch| matches!(ch, ',' | '，' | '.' | '。' | ';' | '；' | ':' | '：'))
 }
 
-/// 判断公式是否为「复杂结构」——矩阵 / 数组 / 分块环境（`\begin{array}` / `\begin{matrix}` /
-/// `\begin{cases}` 等），或含行分隔符 `\\` 与列分隔符 `&`。
-///
-/// 这类公式目前会被 MTEF 生成器「线性化」成一条超宽单行公式，MathType 会以「公式超出了
-/// 允许的大小和（或）高度」拒绝打开。因此导出 Word 时对它们不走 OLE 对象，而是回退为
-/// Unicode 纯文本，保证文档能正常打开且内容不丢。
-pub fn is_complex_formula(s: &str) -> bool {
-    s.contains("\\begin{") || s.contains("\\\\") || s.contains('&')
-}
-
-/// 把含矩阵 / 数组环境的公式转成可读的 Unicode 多行文本（行用换行、列用空格分隔）。
-/// 不含矩阵环境时等价于 `latex_math_to_unicode`。
-pub fn complex_math_to_unicode(s: &str) -> String {
-    if !s.contains("\\begin{") {
-        return latex_math_to_unicode(s);
-    }
-    let mut out = String::new();
-    let mut rest = s;
-    let mut first = true;
-    loop {
-        let Some(pos) = rest.find("\\begin{") else { break };
-        push_part(&mut out, &mut first, convert_math(&rest[..pos]));
-        let after_begin = &rest[pos + "\\begin{".len()..];
-        let name_end = after_begin.find('}').unwrap_or(after_begin.len());
-        let env = &after_begin[..name_end];
-        let tail = &after_begin[name_end..];
-        let end_marker = format!("\\end{{{}}}", env);
-        match tail.find(&end_marker) {
-            Some(off) => {
-                push_part(&mut out, &mut first, expand_matrix_body(&tail[..off]));
-                rest = &tail[off + end_marker.len()..];
-            }
-            None => {
-                // 未闭合环境：整段按普通数学转换后收尾。
-                push_part(&mut out, &mut first, convert_math(after_begin));
-                rest = "";
-                break;
-            }
-        }
-    }
-    push_part(&mut out, &mut first, convert_math(rest));
-    out
-}
-
-fn push_part(out: &mut String, first: &mut bool, part: String) {
-    let part = part.trim().to_string();
-    if part.is_empty() {
-        return;
-    }
-    if !*first {
-        out.push('\n');
-    }
-    out.push_str(&part);
-    *first = false;
-}
-
-/// 展开矩阵 / 数组体：按 `\\` 分行、按 `&` 分列，单元格各自做符号转换后拼接。
-fn expand_matrix_body(body: &str) -> String {
-    // 去掉环境名后的列格式说明 `{ll}`（若有）。
-    let body = body.trim_start();
-    let body = if let Some(rest) = body.strip_prefix('{') {
-        rest.split_once('}').map(|(_, r)| r).unwrap_or(rest)
-    } else {
-        body
-    };
-
-    let mut rows: Vec<String> = Vec::new();
-    for raw_row in body.split("\\\\") {
-        let row = strip_leading_bracket(raw_row.trim());
-        if row.is_empty() {
-            continue;
-        }
-        let cells: Vec<String> = row
-            .split('&')
-            .map(|c| convert_math(c).trim().to_string())
-            .filter(|c| !c.is_empty())
-            .collect();
-        if cells.is_empty() {
-            continue;
-        }
-        rows.push(cells.join("   "));
-    }
-    rows.join("\n")
-}
-
-/// 去掉行首的 `[0.5em]` 之类行间距说明。
-fn strip_leading_bracket(s: &str) -> &str {
-    if let Some(rest) = s.strip_prefix('[') {
-        if let Some(end) = rest.find(']') {
-            return rest[end + 1..].trim_start();
-        }
-    }
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -981,28 +886,6 @@ mod tests {
         assert!(!is_trailing_punct(", which"));
         assert!(!is_trailing_punct("!")); // 感叹号不剥离（可能是阶乘）
         assert!(!is_trailing_punct("abc"));
-    }
-
-    #[test]
-    fn complex_formula_detection_and_unicode_fallback() {
-        assert!(is_complex_formula("\\begin{array}{l} a \\\\ b \\end{array}"));
-        assert!(is_complex_formula("a & b"));
-        assert!(!is_complex_formula("\\frac{a}{b}"));
-
-        // 两行数组：行按换行、列按空格展开，\left/\right 与 \vec 等命令被剥离。
-        let out = complex_math_to_unicode(
-            "\\begin{array}{l} (R/N)T = \\vec{E} \\\\ \\rho_{\\nu} = (R/N) T. \\end{array}",
-        );
-        assert!(!out.contains('\\'));
-        assert!(!out.contains("begin"));
-        assert!(out.contains("(R/N)T = E"));
-        assert!(out.contains('\n'));
-    }
-
-    #[test]
-    fn complex_math_without_matrix_degrades_to_plain() {
-        let out = complex_math_to_unicode("$\\frac{a}{b}$");
-        assert_eq!(out, "(a)/(b)");
     }
 
     #[test]

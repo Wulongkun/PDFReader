@@ -3,6 +3,7 @@
 //! 与 [`crate::config::Config`] 一样，只把用户的书架/最近阅读/收藏持久化在本地，
 //! 不涉及任何敏感信息。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -38,6 +39,8 @@ pub struct Library {
     pub recent: Vec<RecentEntry>,
     /// 收藏的 PDF 绝对路径（顺序即收藏先后）。
     pub favorites: Vec<String>,
+    /// 每本书上次阅读页：PDF 绝对路径 → 页码（1-based），下次打开直接跳回。
+    pub page_positions: HashMap<String, u32>,
 }
 
 impl Default for Library {
@@ -46,6 +49,7 @@ impl Default for Library {
             books: Vec::new(),
             recent: Vec::new(),
             favorites: Vec::new(),
+            page_positions: HashMap::new(),
         }
     }
 }

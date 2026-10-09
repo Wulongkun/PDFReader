@@ -24,7 +24,6 @@ const state = {
   zoomAnchor: null,       // 缩放锚点：鼠标下的页 + 页内分数(0..1)，缩放时保持该 PDF 点不动
   zoomAnchorClient: null, // 锚点在视口中的位置（跟随鼠标缩放）
   rtl: false,             // 竖排古籍阅读模式：页面水平从右往左连续排列（第 1 页在最右）
-  detected: null,         // 排版方向自动检测结果：true=竖排 / false=横排 / null=未识别
   pro: false,             // 是否已激活 Pro（解锁导出三件套）
   sidebarPinned: false,   // 悬浮翻译栏是否固定（固定后点击 PDF 画布不收起）
 };
@@ -35,26 +34,18 @@ function setStatus(msg) {
 }
 function setEnabled(ids, on) { ids.forEach((id) => { $(id).disabled = !on; }); }
 
-// 排版方向自动检测结果 → 短标签（竖排/横排/未识别），用于竖排无书签目录的提示位。
-function orientationLabel() {
-  if (state.detected === true) return '竖排';
-  if (state.detected === false) return '横排';
-  return '未识别';
-}
-
 // 竖排浮动目录里的翻译进度条：翻译全文导出时后端逐段上报 { done, total }。
 function setTocProgress(done, total) {
   const wrap = $('toc-progress');
   if (!wrap) return;
   const fill = wrap.querySelector('.toc-progress-fill');
   const percent = total > 0 ? Math.round(done / total * 100) : 0;
-  if (percent <= 0 || percent >= 100) {
-    wrap.style.display = 'none';
-    if (fill) fill.style.height = '0%';
-    return;
-  }
-  wrap.style.display = '';
-  if (fill) fill.style.height = percent + '%';
+  const active = percent > 0 && percent < 100;
+  wrap.style.display = active ? '' : 'none';
+  if (fill) fill.style.height = active ? percent + '%' : '0%';
+  // 翻译进行中进度条顶替「无书签」提示位；结束后恢复提示（CSS 里 .progressing 隐藏提示）。
+  const hint = $('toc-hint');
+  if (hint) hint.classList.toggle('progressing', active);
 }
 
 // 追踪布局/缩放问题：把关键状态写入 diag.log（带时间戳，便于看先后顺序）。
@@ -139,13 +130,9 @@ function requirePro() {
   return false;
 }
 
-// 同步导出按钮的锁图标：未激活显示锁（提示需激活），激活后完全无标识。
+// 导出按钮不再用锁图标标识 Pro：始终显示正常图标，未激活时点击才弹出激活提示。
 function updateProBadges() {
-  ['btn-export', 'btn-export-word', 'btn-export-word-tr'].forEach((id) => {
-    const el = $(id);
-    if (!el) return;
-    el.classList.toggle('locked', !state.pro);
-  });
+  // 保留占位，供将来需要按 Pro 状态调整界面时使用。
 }
 
 // 设置分页切换：高亮对应分类，显示对应面板。
@@ -207,12 +194,29 @@ function dataUrlToBytes(dataUrl) {
   }
 }
 
-// 读取配置里的竖排古籍（RTL）阅读模式开关。
-async function loadRtlSetting() {
+// 原生 Word 导出进度：后端逐页/逐段上报 { done, total, phase }，
+// phase=extract 显示「正在导出 X/Y 页」，phase=translate 显示「正在翻译 X/Y 段」。
+{
+  const listen = window.__TAURI__?.event?.listen;
+  if (listen) {
+    listen('export-native-progress', (e) => {
+      const p = e.payload;
+      if (p && typeof p.done === 'number' && typeof p.total === 'number') {
+        setStatus(p.phase === 'translate'
+          ? `正在翻译 ${p.done}/${p.total} 段`
+          : `正在导出 ${p.done}/${p.total} 页`);
+      }
+    });
+  }
+}
+
+// 读取配置里的排版方向：'auto'（逐本自动检测）/ 'horizontal'（强制横排）/ 'vertical'（强制竖排）。
+async function loadOrientationSetting() {
   try {
     const cfg = await invoke('get_config');
-    return !!(cfg && cfg.viewer && cfg.viewer.rtl);
-  } catch { return false; }
+    const o = cfg && cfg.viewer && cfg.viewer.orientation;
+    return o === 'horizontal' || o === 'vertical' ? o : 'auto';
+  } catch { return 'auto'; }
 }
 
 // 读取配置里的竖排目录位置（top / left / double），并应用到 body class。返回位置字符串。
@@ -413,9 +417,17 @@ async function detectVerticalScanned(doc) {
 // 排版方向缓存编码（与 Rust 侧 orientation.rs 约定一致）。
 const ORIENT_VERTICAL = 1, ORIENT_HORIZONTAL = 0, ORIENT_UNKNOWN = -1;
 
-// 解析一本书的排版方向：优先读本地缓存（导入/上次打开时已识别），未命中才现场检测并写回。
+// 解析一本书的排版方向：设置里的「排版方向」手动覆盖优先；自动模式下先读本地缓存
+// （导入/上次打开时已识别），未命中才现场检测并写回。
 // 返回 true=竖排 / false=横排 / null=无法判定。
 async function resolveOrientation(path, doc) {
+  // 设置里的「排版方向」手动覆盖优先，但**不写回**该书缓存：手动指定只是临时的全局覆盖，
+  // 切回「自动」后仍按缓存 / 现场检测重新判定，而不是被之前手动选的方向「记住」。
+  const setting = await loadOrientationSetting();
+  if (setting === 'vertical') return true;
+  if (setting === 'horizontal') return false;
+
+  // 自动：优先用本地缓存，未命中再现场检测并写回缓存。
   const cached = await invoke('get_orientation', { path }).catch(() => null);
   if (cached === ORIENT_VERTICAL) return true;
   if (cached === ORIENT_HORIZONTAL) return false;
@@ -426,6 +438,35 @@ async function resolveOrientation(path, doc) {
   const code = detected === true ? ORIENT_VERTICAL : detected === false ? ORIENT_HORIZONTAL : ORIENT_UNKNOWN;
   await invoke('set_orientation', { path, code }).catch(() => {});
   return detected;
+}
+
+// ── 上次阅读页记忆 + 切换文档时清空旧画面 ──
+
+// 把当前文档的阅读页写回后端（按 PDF 路径键控）。
+let lastPageTimer = null;
+function flushLastPage() {
+  if (lastPageTimer) { clearTimeout(lastPageTimer); lastPageTimer = null; }
+  if (!state.pdfDoc || !state.path) return;
+  if (!(state.pageNum >= 1)) return;
+  invoke('set_last_page', { path: state.path, page: state.pageNum }).catch(() => {});
+}
+
+// 滚动/翻页稳定后延迟写回，避免每个滚动帧都落盘。
+function saveLastPageDebounced() {
+  if (lastPageTimer) clearTimeout(lastPageTimer);
+  lastPageTimer = setTimeout(flushLastPage, 600);
+}
+
+// 清空当前文档视图与状态（打开新文档前调用），避免旧 PDF 的渲染画面在异步读取
+// 新文件期间短暂闪现（「打开新书时旧书一闪而过」）。
+function clearDocumentView() {
+  renderPending.clear();
+  const container = $('pdf-pages');
+  if (container) container.innerHTML = '';
+  state.pageEls = [];
+  state.pdfDoc = null;
+  // 新打开 PDF 默认收起目录，不继承上一次的展开/收起状态。
+  $('toc-panel').classList.add('collapsed');
 }
 
 // 打开 PDF 对话框：选择文件后走公共加载流程（与书架点击书籍共用）。
@@ -448,26 +489,18 @@ function reportOpenError(msg) {
   else setStatus(msg);
 }
 
-// 打开内置用户手册：从随应用打包的资源直接 fetch，无需依赖磁盘上的文件。
-// 手册作为内置 PDF 直接走公共加载流程（与普通文档一致），用固定伪路径做排版缓存键。
-const MANUAL_PATH = '__内置使用手册__';
-async function openManual() {
-  try {
-    $('settings').close();
-    showViewer();
-    setStatus('正在打开用户手册…');
-    const resp = await fetch('manual.pdf');
-    if (!resp.ok) throw new Error('手册资源缺失（HTTP ' + resp.status + '）');
-    const buf = await resp.arrayBuffer();
-    await loadPdfData(new Uint8Array(buf), MANUAL_PATH, '用户手册');
-  } catch (err) {
-    reportOpenError('打开用户手册失败：' + err);
-  }
+// 用户手册：跳转在线指南页（外部浏览器打开，不再内置 PDF）。
+const MANUAL_URL = 'http://yuanjingzh.cn/activate/guide.html';
+function openManual() {
+  $('settings').close();
+  invoke('open_external', { url: MANUAL_URL }).catch((err) => setStatus('打开用户手册失败：' + err));
 }
 
 // 加载并渲染一份 PDF：二进制读取 → PDF.js 解析 → 方向检测 → 重建页面。
 // 由 openPdf（对话框）与 openBook（书架点击）共用。
 async function loadPdfDocument(path, name) {
+  flushLastPage();       // 记住上一文档的阅读页
+  clearDocumentView();   // 立即清空旧画面，避免读取新文件期间旧 PDF 一闪而过
   // 立即切到阅读器并提示，避免停留在书架等待读取/解析（大文件打开时界面看似卡住）。
   showViewer();
   setStatus('正在打开…');
@@ -476,12 +509,17 @@ async function loadPdfDocument(path, name) {
   await loadPdfData(new Uint8Array(bytes), path, name);
 }
 
-// 用已就绪的字节加载并渲染 PDF（openPdf / 书架 / 内置手册共用）。
+// 用已就绪的字节加载并渲染 PDF（openPdf / 书架共用）。
 async function loadPdfData(data, path, name) {
+  clearDocumentView(); // 兜底清空旧画面（loadPdfDocument 已清过，幂等）
   state.pdfDoc = await pdfjsLib.getDocument({ data }).promise;
   state.name = name;
   state.path = path;
   state.pageNum = 1;
+  // 读取上次阅读页，供尾部直接跳转。
+  const restorePage = path
+    ? await invoke('get_last_page', { path }).catch(() => null)
+    : null;
   state.fitScale = null;
   state.scale = 1.2;
   state.extractedText = '';
@@ -508,7 +546,6 @@ async function loadPdfData(data, path, name) {
   // 判断横排/竖排：优先用本地缓存，未命中再现场检测（文本层旋转 + 扫描件投影），并写回缓存。
   const detected = await resolveOrientation(path, state.pdfDoc);
   state.rtl = detected === true;
-  state.detected = detected; // 保留检测结果，供目录无书签时展示「检测到什么排版」
   $('pdf-pages').classList.toggle('rtl', state.rtl);
   document.body.classList.toggle('rtl', state.rtl); // 竖排时目录/翻译栏左右互换
   await applyTocPosition(); // 应用竖排目录位置（top/left）
@@ -535,16 +572,18 @@ async function loadPdfData(data, path, name) {
 
   await rebuildPages();
   const viewer = $('viewer');
-  if (state.rtl) {
-    // 第 1 页在最右，初始滚动到最右端。
-    viewer.scrollLeft = viewer.scrollWidth;
-    viewer.scrollTop = 0;
+  if (restorePage && restorePage > 1 && restorePage <= state.pdfDoc.numPages) {
+    await jumpToPage(restorePage, false); // 直接定位到上次阅读页（无滑动动画）
   } else {
-    viewer.scrollTop = 0;
+    if (state.rtl) {
+      // 第 1 页在最右，初始滚动到最右端。
+      viewer.scrollLeft = viewer.scrollWidth;
+      viewer.scrollTop = 0;
+    } else {
+      viewer.scrollTop = 0;
+    }
+    updatePageIndicator();
   }
-  updatePageIndicator();
-  // 若目录侧边栏处于展开状态，载入新文档的目录。
-  if (!$('toc-panel').classList.contains('collapsed')) openToc();
   setStatus(detected === true ? '检测到竖排排版，已切换竖排阅读模式'
     : detected === null ? '未能识别排版方向，默认按横排显示；竖排古籍请在设置开启'
     : '');
@@ -615,8 +654,28 @@ function fitScaleFor(clientWidth, vpWidth) {
 // 上下留白一致且收窄，不再下宽上窄。
 function fitScaleForHeight(clientHeight, vpHeight) {
   if (!(clientHeight > 50) || !(vpHeight > 0)) return null;
-  const s = (clientHeight - 50) / vpHeight;
+  const viewer = $('viewer');
+  const cs = viewer ? getComputedStyle(viewer) : null;
+  const pad = cs ? (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0) : 0;
+  // 上下留白按窗口高度百分比（4%）预留，但不低于容器上下内边距：
+  // 替代原固定 50px，小窗口下不再留白过大；且保证页面不高于内容区、适应后无纵向滚动。
+  const margin = Math.max(clientHeight * 0.04, pad);
+  const s = (clientHeight - margin) / vpHeight;
   return s > 0 ? s : null;
+}
+
+// 竖排容器纵向居中依赖「容器高度 = viewer 内容区高度」；min-height:100% 在个别 WebView2 下
+// 会解析成含内边距的 clientHeight，导致容器比内容区高、适应高度后仍能纵向滚动。
+// 这里显式按内容区高度设置 min-height，保证适应/更小时无纵向溢出。
+function syncRtlMinHeight() {
+  const viewer = $('viewer');
+  const container = $('pdf-pages');
+  if (!viewer || !container) return;
+  if (!state.rtl) { container.style.minHeight = ''; return; }
+  const cs = getComputedStyle(viewer);
+  const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+  const contentH = viewer.clientHeight - pad;
+  container.style.minHeight = contentH > 0 ? contentH + 'px' : '';
 }
 
 // 为每一页创建占位容器（含正确尺寸的空 canvas），保证滚动条高度正确；
@@ -689,6 +748,7 @@ async function rebuildPages(preRendered) {
   });
   container.appendChild(frag);
   $('zoom-info').textContent = Math.round(scale * 100) + '%';
+  syncRtlMinHeight();
 }
 
 // 渲染第 i 页（0-based）的 canvas 位图。
@@ -990,6 +1050,7 @@ function updatePageIndicator(forcePage) {
   $('page-input').value = current;
   $('page-total').textContent = '/ ' + state.pdfDoc.numPages;
   highlightToc(current);
+  saveLastPageDebounced(); // 滚动/翻页稳定后记住当前页，下次打开直接跳回
 }
 
 // 高亮目录中当前页对应的条目（最后一个页码 <= 当前页的项）。
@@ -1042,7 +1103,9 @@ function slideToEl(el, opts) {
   pageJumpAnim = requestAnimationFrame(step);
 }
 
-async function goTo(n) {
+// 跳转到第 n 页（1-based）。animate=true 用一小段缓动滑动（目录/翻页/页码输入）；
+// animate=false 直接定位（打开文档时恢复上次阅读页，不应有滑动动画）。
+async function jumpToPage(n, animate) {
   if (!state.pdfDoc) return;
   const clamped = Math.min(Math.max(1, n), state.pdfDoc.numPages);
   const wrap = state.pageEls[clamped - 1];
@@ -1050,13 +1113,65 @@ async function goTo(n) {
   cancelRtlScroll(); // 停止滚轮缓动，交给跳转接管
   // 先渲染目标页再跳转，避免滑过去时仍是空白。
   await renderPageAt(clamped - 1);
-  if (state.rtl) {
-    // 竖排古籍：目标页对齐到视口右侧（从右往左读）。
-    slideToEl(wrap, { inline: 'end', block: 'nearest', behavior: 'auto' });
+  if (animate) {
+    if (state.rtl) {
+      // 竖排古籍：目标页水平居中到视口。
+      slideToEl(wrap, { inline: 'center', block: 'nearest', behavior: 'auto' });
+    } else {
+      // 横排：目标页垂直居中到视口。
+      slideToEl(wrap, { block: 'center', behavior: 'auto' });
+    }
+    // 翻页/跳转后，菜单栏页码由滚动事件按「最右/最上」阅读位置实时更新，不强行等于被居中的目标页。
+  } else if (state.rtl) {
+    // 打开恢复阅读页：右对齐到阅读位置（第 1 页在最右）。
+    wrap.scrollIntoView({ inline: 'end', block: 'nearest', behavior: 'auto' });
   } else {
-    slideToEl(wrap, { block: 'start', behavior: 'auto' });
+    wrap.scrollIntoView({ block: 'start', behavior: 'auto' });
   }
-  updatePageIndicator(clamped); // 直接反映目标页，避免读取尚未移动的 scrollTop
+  if (!animate) updatePageIndicator(clamped); // 无动画定位（恢复阅读页）时直接反映目标页
+}
+
+async function goTo(n) {
+  await jumpToPage(n, true);
+}
+
+// 长按翻页：按下立即翻一页，按住约 380ms 后以 ~140ms 间隔连续翻；松开/移出即停。
+// 串行化（busy 标志）避免快速连点时 jumpToPage 的异步渲染乱序、页码指示倒退。
+function bindPageStepper(btnId, delta) {
+  const btn = $(btnId);
+  if (!btn) return;
+  let holdTimer = null, repeatTimer = null, target = 0, busy = false, suppressClick = false;
+
+  const stop = () => {
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+    if (repeatTimer) { clearInterval(repeatTimer); repeatTimer = null; }
+  };
+  const step = async () => {
+    if (busy || !state.pdfDoc) return;
+    target = Math.min(Math.max(1, target + delta), state.pdfDoc.numPages);
+    busy = true;
+    try { await jumpToPage(target, true); }
+    finally { busy = false; }
+  };
+
+  btn.addEventListener('pointerdown', () => {
+    suppressClick = true;
+    stop();
+    target = state.pageNum;
+    step();
+    holdTimer = setTimeout(() => { repeatTimer = setInterval(step, 140); }, 380);
+  });
+  btn.addEventListener('pointerup', stop);
+  btn.addEventListener('pointerleave', () => { suppressClick = false; stop(); });
+  btn.addEventListener('pointercancel', () => { suppressClick = false; stop(); });
+  // 鼠标的 click 在 pointerup 后触发，已由 pointerdown 处理，这里忽略避免多翻一页；
+  // 键盘 Enter/Space 激活时无 pointerdown，走这里单步翻一页。
+  btn.addEventListener('click', () => {
+    if (suppressClick) { suppressClick = false; return; }
+    target = state.pageNum;
+    step();
+  });
+  btn.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
 // 缩放（跟随鼠标、内容固定）：手势期间用 transform 实时预览（GPU 合成、高刷屏丝滑、锚点内容
@@ -1072,6 +1187,8 @@ let zoomPrevT = 0;          // 上一动画帧时间戳（帧率无关指数平�
 let zoomCommitTimer = null; // 手势结束后的提交 debounce（收敛触发为主，此为兜底）
 let zoomCommitting = false;   // commitZoom 是否在进行中（离屏预渲染期间）
 let zoomCommitPending = false; // 提交进行中又收到新提交请求，结束后补跑一次
+
+const MIN_SCALE = 0.05; // 最小缩放倍率：允许超大页面（长图/海报）继续缩小，而非卡在 30%
 
 // 把离屏位图按倍率贴回第 i 页画布（同步、原子，无中间空白帧）。
 function blitPageBitmap(i, scale, bmp) {
@@ -1196,7 +1313,7 @@ function zoom(factor, clientX, clientY) {
   if (!state.pdfDoc) return;
   const viewer = $('viewer');
   const cur = currentScale();
-  const target = Math.min(5, Math.max(0.3, cur * zoomTarget * factor));
+  const target = Math.min(5, Math.max(MIN_SCALE, cur * zoomTarget * factor));
   const newTarget = target / cur;
   if (Math.abs(newTarget - zoomTarget) < 0.001) return;
 
@@ -1471,7 +1588,7 @@ async function commitZoom() {
   try {
     const epoch = zoomEpoch;
     const container = $('pdf-pages');
-    const target = Math.min(5, Math.max(0.3, currentScale() * zoomTarget));
+    const target = Math.min(5, Math.max(MIN_SCALE, currentScale() * zoomTarget));
 
     // 预渲染可见页（含上下相邻页，防边界漏白）到离屏位图。
     const indices = visiblePageIndices();
@@ -1525,20 +1642,24 @@ async function fitWidth() {
   if (!state.pdfDoc) return;
   resetZoomState();
   const viewer = $('viewer');
-  const page = await state.pdfDoc.getPage(1);
-  const vp1 = page.getViewport({ scale: 1 });
+  // 以画面中心的页面为基准适应（而非第 1 页）：不同页尺寸可能不同，中心页才代表当前视口。
+  const centerIdx = viewportCenterPage() - 1;
+  const vp1 = (state.vp1Cache && state.vp1Cache[centerIdx])
+    ? state.vp1Cache[centerIdx]
+    : (await state.pdfDoc.getPage(centerIdx + 1)).getViewport({ scale: 1 });
   // 古籍（RTL）按高度适应，其余按宽度适应。
   const fs = state.rtl
     ? fitScaleForHeight(viewer.clientHeight, vp1.height)
     : fitScaleFor(viewer.clientWidth, vp1.width);
-  logDiag(`[fitWidth] clientWidth=${viewer.clientWidth} clientHeight=${viewer.clientHeight} vp1=${vp1.width.toFixed(1)} rtl=${state.rtl} fitScale=${fs} scale=${state.scale}`);
+  logDiag(`[fitWidth] center=${centerIdx + 1} clientWidth=${viewer.clientWidth} clientHeight=${viewer.clientHeight} vp1=${vp1.width.toFixed(1)}x${vp1.height.toFixed(1)} rtl=${state.rtl} fitScale=${fs} scale=${state.scale}`);
   if (fs == null) return; // viewer 尚未布局完成，跳过本次重排，避免页面缩成一条
   state.fitScale = fs;
   await rebuildPages();
-  const wrap = state.pageEls[state.pageNum - 1];
+  // 让中心页保持居中（它才是本次适应的参照页）。
+  const wrap = state.pageEls[centerIdx];
   if (wrap) {
-    if (state.rtl) wrap.scrollIntoView({ inline: 'end', block: 'nearest', behavior: 'auto' });
-    else wrap.scrollIntoView({ block: 'start', behavior: 'auto' });
+    if (state.rtl) wrap.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'auto' });
+    else wrap.scrollIntoView({ block: 'center', behavior: 'auto' });
   }
 }
 
@@ -1932,32 +2053,18 @@ async function pageToCanvas(page, scale) {
   return canvas;
 }
 
-// 把离屏 canvas 逆时针旋转 90°（用于竖排古籍：让竖列变横排，修复 OCR 乱序/换行）。
-function rotate90CCW(canvas) {
-  const out = document.createElement('canvas');
-  out.width = canvas.height;
-  out.height = canvas.width;
-  const ctx = out.getContext('2d', { willReadFrequently: true });
-  ctx.translate(0, canvas.width);
-  ctx.rotate(-Math.PI / 2);
-  ctx.drawImage(canvas, 0, 0);
-  return out;
-}
-
 // 渲染页面用于 OCR / 云端解析，返回 { canvas, dataUrl }。
 // cloud=true：最长边压到 2000px 并以 JPEG(q0.85) 发送——超大扫描件的 PNG 可达数 MB，
 // 云端（GLM / 大模型）会因图片过大而拒绝；压缩后体积小一个数量级，且对 OCR 精度影响很小。
 // cloud=false（本地 OCR）：保持 PNG + 180 DPI 目标不变。
-// vertical=true：竖排古籍模式，先逆时针旋转 90° 再输出（仅云端 OCR 文本路径使用）。
-async function pageToOcrImage(page, cloud, vertical) {
+async function pageToOcrImage(page, cloud) {
   let scale = ocrScale(page);
   if (cloud) {
     const vp = page.getViewport({ scale });
     const maxEdge = Math.max(vp.width, vp.height);
     if (maxEdge > 2000) scale *= 2000 / maxEdge;
   }
-  let canvas = await pageToCanvas(page, scale);
-  if (vertical) canvas = rotate90CCW(canvas);
+  const canvas = await pageToCanvas(page, scale);
   const dataUrl = cloud ? canvas.toDataURL('image/jpeg', 0.85) : canvas.toDataURL('image/png');
   return { canvas, dataUrl };
 }
@@ -2218,7 +2325,6 @@ async function extractPages(withOcr) {
   // 云端 OCR（GLM / 大模型）对超大图片敏感，需压缩；本地 OCR 保持原样。
   const cfg = withOcr ? await invoke('get_config') : null;
   const cloud = !!(cfg && (cfg.ocr.mode === 'glm' || cfg.ocr.mode === 'llm'));
-  const vertical = !!(cfg && cfg.ocr.vertical && cloud);
 
   for (let i = 0; i < total; i++) {
     const page = await state.pdfDoc.getPage(i + 1);
@@ -2234,7 +2340,7 @@ async function extractPages(withOcr) {
     const results = await mapWithConcurrency(ocrPages, 4, async (pageIdx) => {
       const page = await state.pdfDoc.getPage(pageIdx + 1);
       const scale = ocrScale(page); // 本地 OCR 包围盒换算用（cloud 时无包围盒，不依赖它）
-      const { dataUrl: png } = await pageToOcrImage(page, cloud, vertical);
+      const { dataUrl: png } = await pageToOcrImage(page, cloud);
       const result = await invoke('ocr_image', { request: { png_data_url: png } });
       done++;
       setStatus(`正在识别扫描页… ${done} / ${ocrPages.length}`);
@@ -2365,9 +2471,8 @@ async function extractCurrentPage(withOcr, pageNo) {
 
   const cfg = await invoke('get_config');
   const cloud = cfg.ocr.mode === 'glm' || cfg.ocr.mode === 'llm';
-  const vertical = !!(cfg.ocr.vertical && cloud);
   const scale = ocrScale(page);
-  const { dataUrl: png } = await pageToOcrImage(page, cloud, vertical);
+  const { dataUrl: png } = await pageToOcrImage(page, cloud);
   const result = await invoke('ocr_image', { request: { png_data_url: png } });
   // 本地 OCR 返回逐行包围盒 → 还原排版；大模型 / GLM OCR 返回 Markdown 文本。
   if (result && result.lines && result.lines.length) {
@@ -2496,85 +2601,9 @@ async function exportText() {
   }
 }
 
-// ---------- 公式预览（MathJax → SVG → PNG） ----------
-
-// 惰性加载 MathJax（首次需要时才加载本地 vendor 脚本，避免拖慢启动）。
-let mathJaxLoad = null;
-
 // 导出 Word 期间累积的「OCR 原始输出」（未做标题清洗），导出结束后写入 ocr_raw.txt，
 // 便于定位 ## 标题泄漏的确切格式。
 let ocrRawDump = [];
-function loadMathJax() {
-  if (mathJaxLoad) return mathJaxLoad;
-  if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
-    mathJaxLoad = window.MathJax.startup.promise;
-    return mathJaxLoad;
-  }
-  mathJaxLoad = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = './vendor/mathjax/tex-svg.js';
-    s.onload = () => {
-      const mj = window.MathJax;
-      if (mj && mj.startup && mj.startup.promise) resolve(mj.startup.promise);
-      else reject(new Error('MathJax 未正确初始化'));
-    };
-    s.onerror = () => reject(new Error('MathJax 脚本加载失败'));
-    document.head.appendChild(s);
-  });
-  return mathJaxLoad;
-}
-
-// 把一段 LaTeX 渲染成 PNG 预览（返回 {data_url, width, height}，CSS 像素）；
-// 渲染失败返回 null，后端会回退为纯文本公式。
-async function renderFormulaPng(latex) {
-  try {
-    await loadMathJax();
-    const container = document.createElement('div');
-    container.style.position = 'absolute';
-    container.style.visibility = 'hidden';
-    container.style.left = '-10000px';
-    container.textContent = '\\(' + latex + '\\)';
-    document.body.appendChild(container);
-    await window.MathJax.typesetPromise([container]);
-    const svg = container.querySelector('svg');
-    if (!svg) { container.remove(); return null; }
-    // 用浏览器实际布局尺寸（px）；取不到再按 ex=8px 换算。
-    let w = svg.getBoundingClientRect().width;
-    let h = svg.getBoundingClientRect().height;
-    if (!w || !h) {
-      const ex = (s) => { const m = /^([0-9.]+)ex$/.exec(String(s || '').trim()); return m ? parseFloat(m[1]) * 8 : 0; };
-      w = ex(svg.getAttribute('width'));
-      h = ex(svg.getAttribute('height'));
-    }
-    if (!w || !h) { container.remove(); return null; }
-    w = Math.round(w * 100) / 100;
-    h = Math.round(h * 100) / 100;
-    svg.setAttribute('width', w + 'px');
-    svg.setAttribute('height', h + 'px');
-    const xml = new XMLSerializer().serializeToString(svg);
-    container.remove();
-    // SVG → Image → canvas（4× 高清）→ PNG data URL。
-    const url = URL.createObjectURL(new Blob([xml], { type: 'image/svg+xml' }));
-    const img = new Image();
-    await new Promise((res, rej) => {
-      img.onload = res;
-      img.onerror = () => rej(new Error('SVG 图片解码失败'));
-      img.src = url;
-    });
-    const scale = 4;
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(w * scale));
-    canvas.height = Math.max(1, Math.round(h * scale));
-    const ctx = canvas.getContext('2d');
-    ctx.scale(scale, scale);
-    ctx.drawImage(img, 0, 0, w, h);
-    URL.revokeObjectURL(url);
-    return { data_url: canvas.toDataURL('image/png'), width: w, height: h };
-  } catch (err) {
-    logDiag('公式预览渲染失败：' + latex + ' → ' + err);
-    return null;
-  }
-}
 
 // 导出为带大纲级别的 .docx（标题层级由前端字号启发式判定，与原文一致）。
 // 当 OCR 方式为「大模型 / GLM」时走云端版面解析：公式/页眉页脚去除、表格还原、
@@ -2589,11 +2618,9 @@ async function exportWord() {
     const paragraphs = await collectExportParagraphs();
     if (!paragraphs.length) { setStatus('未提取到任何文字'); return; }
     const name = (state.name || '文档').replace(/\.pdf$/i, '') + '.docx';
-    setStatus('正在渲染公式预览…');
-    const previews = await renderFormulaPreviews(paragraphs);
     setStatus('正在生成 Word 文档…');
     const saved = await invoke('export_docx', {
-      request: { paragraphs, suggested_name: name, previews },
+      request: { paragraphs, suggested_name: name },
     });
     setStatus(`已导出：${saved}`);
     // 把 OCR 原始输出（未清洗）整体写入 ocr_raw.txt，便于排查 ## 标题泄漏。
@@ -2612,30 +2639,28 @@ async function exportWord() {
 }
 
 // 导出一份「完全翻译」的 Word：先把全文段落翻译成目标语言（公式用占位符保护、不翻译，
-// 标题层级 / 表格 / 图片 / 字号等结构原样保留），再走与 exportWord 完全相同的 OLE 注入
+// 标题层级 / 表格 / 图片 / 字号等结构原样保留），再走与 exportWord 完全相同的 OMML 注入
 // 流程，因此格式与导出的原文一致。
-async function exportWordTranslated() {
+// 用 pdfomml 把原始 PDF 直接转成「翻译版」.docx：正文翻译成目标语言，公式/插图保留，
+// 公式格式与「导出 Word（原生）」一致（omml/mathtype，由「设置 → 原生 Word」决定）。
+async function exportWordTranslatedNative(pages) {
   if (!state.pdfDoc) return;
   if (!requirePro()) return;
   const btn = $('btn-export-word-tr');
   btn.disabled = true;
   try {
     const cfg = await invoke('get_config');
-    if (!cfg.translate.api_key) {
+    if (!cfg.translate || !cfg.translate.api_key) {
       setStatus('请先在「设置」里填写翻译 API Key，再导出译文');
       return;
     }
-    const paragraphs = await collectExportParagraphs();
-    if (!paragraphs.length) { setStatus('未提取到任何文字'); return; }
-    const name = (state.name || '文档').replace(/\.pdf$/i, '') + '（译文）.docx';
-    setStatus('正在翻译全文（公式保持原样，多段并发）…');
-    const translated = await invoke('translate_paragraphs', { paragraphs });
-    if (!translated || !translated.length) { setStatus('翻译结果为空'); return; }
-    setStatus('正在渲染公式预览…');
-    const previews = await renderFormulaPreviews(translated);
-    setStatus('正在生成 Word 文档…');
-    const saved = await invoke('export_docx', {
-      request: { paragraphs: translated, suggested_name: name, previews },
+    const base = (state.name || '文档').replace(/\.pdf$/i, '');
+    const name = base + pageRangeSuffix(pages) + '（译文）.docx';
+    setStatus('正在翻译并导出…');
+    const saved = await invoke('export_word_translated_native', {
+      path: state.path,
+      suggestedName: name,
+      pages: pages || null,
     });
     setStatus(`已导出：${saved}`);
   } catch (err) {
@@ -2644,6 +2669,101 @@ async function exportWordTranslated() {
     btn.disabled = false;
     setTocProgress(0, 1); // 翻译结束（无论成败）收起目录里的进度条
   }
+}
+
+// 用 pdfomml 把原始 PDF 直接转成带 Word 原生可编辑公式（OMML）的 .docx。
+// 把解析后的升序页码数组压回 pdfomml 的 `--pages` 紧凑格式（如 1-3,5,7-9）。
+function compressPageRange(pages) {
+  const out = [];
+  let start = pages[0];
+  let prev = pages[0];
+  for (let i = 1; i <= pages.length; i++) {
+    const cur = pages[i];
+    if (cur === prev + 1) { prev = cur; continue; }
+    out.push(start === prev ? String(start) : `${start}-${prev}`);
+    start = prev = cur;
+  }
+  return out.join(',');
+}
+
+// 按导出页码范围生成文件名后缀：全部 → 无；单页 → 第X页；多页 → 紧凑范围 + 页（如 1-3页）。
+function pageRangeSuffix(pages) {
+  if (!pages) return '';
+  const trimmed = String(pages).trim();
+  if (!trimmed) return '';
+  // 整串是纯数字（无连字符）即单页
+  if (/^\d+$/.test(trimmed)) return '第' + trimmed + '页';
+  return trimmed + '页';
+}
+
+// 与 exportWord（前端提取 + 重建）不同，这里整份 PDF 交给 pdfomml 处理，引擎在
+// 「设置 → OCR 模型」里选：本地（公式留图）/ 大模型 VLM / GLM-OCR。`pages` 为 null 时导出全部。
+async function exportWordNative(pages) {
+  if (!state.pdfDoc) return;
+  if (!requirePro()) return;
+  const btn = $('btn-export-word');
+  btn.disabled = true;
+  try {
+    const cfg = await invoke('get_config');
+    const o = cfg.ocr || {};
+    const w = cfg.word || {};
+    // 统一识别引擎由 ocr.mode 决定，映射回公式识别引擎的取值（llm→vlm、glm→glm-ocr、其余→null）。
+    const engine = o.mode === 'llm' ? 'vlm' : o.mode === 'glm' ? 'glm-ocr' : 'null';
+    if (engine === 'vlm' && !(w.api_key || w.api_base)) {
+      setStatus('请先在「设置 → OCR 模型」里填写 VLM 的 API Key / Base URL，或改用本地引擎');
+      return;
+    }
+    if (engine === 'glm-ocr' && !w.glm_api_key) {
+      setStatus('未填写 GLM-OCR Key。可前往 http://yuanjingzh.cn/activate/ 获取，或在「设置 → OCR 模型」改用本地引擎（离线，精度较低）');
+      return;
+    }
+    const base = (state.name || '文档').replace(/\.pdf$/i, '');
+    const name = base + pageRangeSuffix(pages) + '.docx';
+    setStatus('正在导出…');
+    const saved = await invoke('export_word_native', {
+      path: state.path,
+      suggestedName: name,
+      pages: pages || null,
+    });
+    setStatus(`已导出：${saved}`);
+  } catch (err) {
+    setStatus('导出失败：' + err);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// 导出 Word（原生 / 译文）前先让用户选页码范围（留空 = 全部）。
+// mode：'native'（导出 Word）或 'translated'（导出译文），提交时据此分发。
+function openExportRange(mode) {
+  if (!state.pdfDoc) return;
+  if (!requirePro()) return;
+  state.exportRangeMode = mode;
+  $('export-native-range').value = '';
+  $('export-native-total').textContent = state.pdfDoc.numPages;
+  $('export-native-range-dialog').showModal();
+}
+
+function closeExportNativeRange() {
+  $('export-native-range-dialog').close();
+}
+
+function submitExportNativeRange() {
+  const total = state.pdfDoc.numPages;
+  const raw = $('export-native-range').value.trim();
+  const run = state.exportRangeMode === 'translated' ? exportWordTranslatedNative : exportWordNative;
+  if (!raw) {
+    closeExportNativeRange();
+    run(null);
+    return;
+  }
+  const pages = parsePageRange(raw, total);
+  if (!pages) {
+    setStatus('页码范围格式无效，例如 1-3,5,7-9');
+    return;
+  }
+  closeExportNativeRange();
+  run(compressPageRange(pages));
 }
 
 // 提取导出用的结构化段落（云端解析，失败回退本地提取），与 exportWord / exportWordTranslated 共用。
@@ -2659,26 +2779,6 @@ async function collectExportParagraphs() {
     }
   }
   return await extractDocument(true);
-}
-
-// 汇总去重公式 → MathJax 批量渲染 PNG 预览（两步导出，与 exportWord / exportWordTranslated 共用）。
-async function renderFormulaPreviews(paragraphs) {
-  let previews = [];
-  try {
-    const formulas = await invoke('collect_math', { paragraphs });
-    if (formulas && formulas.length) {
-      const rendered = await mapWithConcurrency(formulas, 4, async (latex) => {
-        const png = await renderFormulaPng(latex);
-        return png ? { latex, png_data_url: png.data_url, width: png.width, height: png.height } : null;
-      });
-      previews = rendered.filter(Boolean);
-    }
-  } catch (err) {
-    // 渲染失败不阻塞导出：后端会把无预览的公式回退为纯文本。
-    logDiag('公式预览渲染失败：' + err);
-    previews = [];
-  }
-  return previews;
 }
 
 function getSelectedText() {
@@ -3029,9 +3129,7 @@ async function openToc() {
     } else {
       $('toc-generate').style.display = '';
       $('toc-hint').style.display = '';
-      // 竖排浮动目录：不显示「无书签」提示，改为显示检测到的排版方向；横排保留原提示。
-      $('toc-hint').textContent = state.rtl ? orientationLabel() : '本文档没有书签目录';
-      list.innerHTML = '<div class="toc-hint">本文档没有书签目录。</div>';
+      list.innerHTML = ''; // 提示统一走 #toc-hint，避免与列表内重复显示
     }
   }
 }
@@ -3053,7 +3151,8 @@ async function translate() {
   showSidebar();
   setStatus('模型思考中…');
   $('translation').classList.add('markdown');
-  $('translation').classList.remove('muted');
+  $('translation').classList.add('muted');
+  $('translation').innerHTML = '大模型思考中…';
   $('btn-copy').disabled = true;
 
   // 流式接收增量译文，实时刷新显示（边生成边出字，观感更快）。
@@ -3065,6 +3164,8 @@ async function translate() {
         if (!firstChunk) {
           firstChunk = true;
           setStatus('正在生成译文…');
+          $('translation').classList.remove('muted');
+          $('translation').innerHTML = '';
         }
         acc += e.payload || '';
         $('translation').innerHTML = renderMarkdown(acc);
@@ -3140,18 +3241,27 @@ function makeDialogDraggable(dialog, handle) {
 
 async function openSettings() {
   const cfg = await invoke('get_config');
-  $('cfg-base-url').value = cfg.translate.base_url;
+  $('cfg-base-url').value = cfg.translate.base_url || 'https://api.deepseek.com/v1';
   $('cfg-api-key').value = cfg.translate.api_key;
-  $('cfg-model').value = cfg.translate.model;
+  $('cfg-model').value = cfg.translate.model || 'deepseek-v4-flash';
   $('cfg-target-lang').value = cfg.translate.target_lang;
-  $('cfg-ocr-mode').value = cfg.ocr.mode || 'local';
-  $('cfg-ocr-model').value = cfg.ocr.model || '';
-  $('cfg-ocr-detail').value = cfg.ocr.detail || 'auto';
-  $('cfg-ocr-glm-key').value = cfg.ocr.glm_api_key || '';
-  $('cfg-ocr-lang').value = cfg.ocr.lang || 'auto';
-  $('cfg-ocr-vertical').checked = !!cfg.ocr.vertical;
-  $('cfg-viewer-rtl').checked = !!(cfg.viewer && cfg.viewer.rtl);
+  const orient = (cfg.viewer && cfg.viewer.orientation) || 'auto';
+  $('cfg-orientation').value = (orient === 'horizontal' || orient === 'vertical') ? orient : 'auto';
   $('cfg-toc-position').value = (cfg.viewer && cfg.viewer.toc_position) || 'top';
+  const w = cfg.word || {};
+  $('cfg-word-base').value = w.api_base || '';
+  $('cfg-word-key').value = w.api_key || '';
+  $('cfg-word-model').value = w.model || '';
+  $('cfg-word-format').value = (w.formula_format === 'mathtype') ? 'mathtype' : 'omml';
+  const o = cfg.ocr || {};
+  // 统一识别引擎：local / llm / glm，公式识别与文字提取共用，以 ocr.mode 为准，默认 glm。
+  $('cfg-engine').value = (o.mode === 'local' || o.mode === 'llm' || o.mode === 'glm') ? o.mode : 'glm';
+  $('cfg-ocr-lang').value = o.lang || 'auto';
+  $('cfg-ocr-model').value = o.model || '';
+  $('cfg-ocr-detail').value = (o.detail === 'high' || o.detail === 'low') ? o.detail : 'auto';
+  // GLM-OCR 的 Key 在「公式识别」与「文字提取」之间共用，取任一非空值回填。
+  $('cfg-glm-key').value = w.glm_api_key || o.glm_api_key || '';
+  updateEngineVisibility();
   await refreshLicenseStatus(); // 刷新 Pro 状态显示
   switchSettingsTab('model'); // 每次打开回到「模型配置」
   $('settings').showModal();
@@ -3159,6 +3269,7 @@ async function openSettings() {
 
 async function saveConfig() {
   try {
+    const sharedGlmKey = $('cfg-glm-key').value.trim();
     await invoke('set_config', {
       config: {
         translate: {
@@ -3170,25 +3281,32 @@ async function saveConfig() {
           target_lang: $('cfg-target-lang').value.trim() || '中文',
         },
         ocr: {
-          mode: $('cfg-ocr-mode').value || 'local',
+          mode: $('cfg-engine').value || 'glm',
           model: $('cfg-ocr-model').value.trim(),
           detail: $('cfg-ocr-detail').value || 'auto',
-          glm_api_key: $('cfg-ocr-glm-key').value.trim(),
+          glm_api_key: sharedGlmKey,   // 与 word.glm_api_key 共用同一把 GLM-OCR Key
           lang: $('cfg-ocr-lang').value || 'auto',
-          vertical: $('cfg-ocr-vertical').checked,
         },
         viewer: {
-          rtl: $('cfg-viewer-rtl').checked,
+          orientation: $('cfg-orientation').value || 'auto',
           toc_position: $('cfg-toc-position').value || 'top',
+        },
+        word: {
+          api_base: $('cfg-word-base').value.trim(),
+          api_key: $('cfg-word-key').value.trim(),
+          model: $('cfg-word-model').value.trim(),
+          glm_api_key: sharedGlmKey,
+          formula_format: $('cfg-word-format').value || 'omml',
         },
       },
     });
     $('settings').close();
     await applyTocPosition(); // 目录位置可能变化，更新 body class
-    // 若已打开文档，按新的竖排古籍设置即时重排并回到当前页。
+    // 若已打开文档，按新的排版方向设置即时重排并回到当前页。
     if (state.pdfDoc) {
       const page = state.pageNum;
-      state.rtl = await loadRtlSetting();
+      const detected = await resolveOrientation(state.path, state.pdfDoc);
+      state.rtl = detected === true;
       $('pdf-pages').classList.toggle('rtl', state.rtl);
       document.body.classList.toggle('rtl', state.rtl);
       $('btn-fit').title = state.rtl ? '适应高度' : '适应宽度';
@@ -3206,6 +3324,22 @@ async function saveConfig() {
   } catch (err) {
     setStatus('保存失败：' + err);
   }
+}
+
+// 「OCR 模型」设置：按统一识别引擎动态显示 / 隐藏 API 字段，避免无关配置干扰。
+function updateEngineVisibility() {
+  const eng = $('cfg-engine').value;   // local / llm / glm
+  const isLocal = eng === 'local';
+  const isLlm = eng === 'llm';
+  const isGlm = eng === 'glm';
+  $('vlm-fields').classList.toggle('hidden', !isLlm);          // VLM 仅大模型
+  $('glm-fields').classList.toggle('hidden', !isGlm);          // GLM Key 仅 GLM
+  $('cfg-ocr-lang-row').classList.toggle('hidden', !isLocal);  // 本地 OCR 语言
+  $('cfg-ocr-model-row').classList.toggle('hidden', !isLlm);   // 大模型模型名
+  $('cfg-ocr-detail-row').classList.toggle('hidden', !isLlm);  // 大模型清晰度
+  // GLM 未填 Key 时提示去获取，或改选本地（离线、精度较低）。
+  const glmKeyEmpty = !($('cfg-glm-key').value || '').trim();
+  $('glm-key-hint').classList.toggle('hidden', !(isGlm && glmKeyEmpty));
 }
 
 // 悬浮翻译栏是否生效：竖排 + 顶部/双栏目录（目录与翻译栏均为浮层）；左侧目录与横排保持原布局。
@@ -3293,6 +3427,7 @@ function nameFromPath(path) {
 }
 
 function showShelf() {
+  flushLastPage(); // 回到书架前记住当前文档的阅读页
   document.body.classList.add('shelf-mode');
   const b = $('bookshelf');
   if (b) { b.classList.remove('view-in'); void b.offsetWidth; b.classList.add('view-in'); }
@@ -3341,7 +3476,7 @@ async function renderShelf() {
     renderBreadcrumb();
 
     const recent = lib.recent || [];
-    renderGrid('recent-grid', recent.map((r) => ({ path: r.path, name: r.name, is_folder: false })), { showStar: true });
+    renderGrid('recent-grid', recent.map((r) => ({ path: r.path, name: r.name, is_folder: false })), { showStar: true, showRemove: true, removeRecent: true });
     $('recent-section').classList.toggle('hidden', recent.length === 0);
 
     const favs = (lib.favorites || []).map((path) => ({ path, name: nameFromPath(path), is_folder: false }));
@@ -3351,6 +3486,7 @@ async function renderShelf() {
     $('shelf-empty').classList.remove('hidden');
     $('shelf-empty').textContent = '读取书架失败：' + err;
   }
+  updateShelfTitle();
 }
 
 function renderGrid(id, entries, opts) {
@@ -3400,9 +3536,13 @@ function renderBookCard(entry, opts) {
   if (opts.showRemove) {
     const rm = document.createElement('button');
     rm.className = 'shelf-remove';
-    rm.title = '从书架移除';
+    rm.title = opts.removeRecent ? '从最近阅读移除' : '从书架移除';
     rm.innerHTML = '<svg class="icon"><use href="#icon-close"/></svg>';
-    rm.addEventListener('click', (e) => { e.stopPropagation(); removeBook(entry.path); });
+    rm.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (opts.removeRecent) removeRecentEntry(entry.path);
+      else removeBook(entry.path);
+    });
     card.appendChild(rm);
   }
 
@@ -3412,22 +3552,40 @@ function renderBookCard(entry, opts) {
 function renderBreadcrumb() {
   const bc = $('shelf-breadcrumb');
   bc.innerHTML = '';
-  const home = document.createElement('button');
-  home.className = 'crumb';
-  home.textContent = '书架';
-  home.addEventListener('click', () => { currentFolder = null; renderShelf(); });
-  bc.appendChild(home);
-  if (currentFolder) {
-    const sep = document.createElement('span');
-    sep.className = 'crumb-sep';
-    sep.textContent = '/';
-    bc.appendChild(sep);
-    const cur = document.createElement('span');
-    cur.className = 'crumb-cur';
-    cur.textContent = nameFromPath(currentFolder);
-    cur.title = currentFolder;
-    bc.appendChild(cur);
+  if (!currentFolder) return;
+  const sep = document.createElement('span');
+  sep.className = 'crumb-sep';
+  sep.textContent = '/';
+  bc.appendChild(sep);
+  const cur = document.createElement('span');
+  cur.className = 'crumb-cur';
+  cur.textContent = nameFromPath(currentFolder);
+  cur.title = currentFolder;
+  bc.appendChild(cur);
+}
+
+// 书架标题随滚动切换：书架 → 最近阅读 → 收藏（某区块顶部越过书架头即切换）。
+function updateShelfTitle() {
+  const body = document.querySelector('.shelf-body');
+  if (!body) return;
+  const bodyTop = body.getBoundingClientRect().top;
+  const sections = [
+    { el: $('shelf-section'), text: '书架', icon: 'icon-home' },
+    { el: $('recent-section'), text: '最近阅读', icon: 'icon-open' },
+    { el: $('fav-section'), text: '收藏', icon: 'icon-star' },
+  ];
+  let cur = sections[0];
+  for (const s of sections) {
+    if (!s.el || s.el.classList.contains('hidden')) continue;
+    if (s.el.getBoundingClientRect().top <= bodyTop + 1) cur = s;
   }
+  const textEl = $('shelf-title-text');
+  const iconEl = $('shelf-title-icon');
+  if (textEl) textEl.textContent = cur.text;
+  if (iconEl) iconEl.setAttribute('href', '#' + cur.icon);
+  // 仅在书架根（标题为「书架」）显示子目录面包屑；滚到「最近阅读/收藏」时隐藏。
+  const bc = $('shelf-breadcrumb');
+  if (bc) bc.classList.toggle('hidden', cur.text !== '书架');
 }
 
 function enterFolder(path) {
@@ -3461,6 +3619,10 @@ async function removeBook(path) {
   try { await invoke('remove_book', { path }); renderShelf(); }
   catch (err) { shelfStatus('移除失败：' + err); }
 }
+async function removeRecentEntry(path) {
+  try { await invoke('remove_recent', { path }); renderShelf(); }
+  catch (err) { shelfStatus('移除失败：' + err); }
+}
 async function toggleFavorite(path) {
   try { await invoke('toggle_favorite', { path }); renderShelf(); }
   catch (err) { shelfStatus('收藏失败：' + err); }
@@ -3471,6 +3633,7 @@ async function toggleFavorite(path) {
 // 这样之后打开这些书就无需再现场检测（检测需读整本 + 采样渲染多页，较慢）。
 const orientQueue = [];
 let orientBusy = false;
+let orientPaused = false;   // 打开书时暂停预热，让现场检测 + 页面渲染独占资源
 
 function enqueueOrientation(paths) {
   for (const p of paths || []) orientQueue.push(p);
@@ -3481,7 +3644,7 @@ async function pumpOrientationQueue() {
   if (orientBusy) return;
   orientBusy = true;
   try {
-    while (orientQueue.length) {
+    while (orientQueue.length && !orientPaused) {
       const path = orientQueue.shift();
       try {
         await detectAndCacheOrientation(path);
@@ -3494,9 +3657,25 @@ async function pumpOrientationQueue() {
   }
 }
 
+// 打开书时暂停预热队列（保留队列内容，之后恢复）；被点开的书另见 dequeueOrientation。
+function pauseOrientationQueue() { orientPaused = true; }
+function resumeOrientationQueue() { orientPaused = false; pumpOrientationQueue(); }
+
+// 把指定书从预热队列里摘掉：它马上会现场检测并写缓存，无需后台再读一遍。
+function dequeueOrientation(path) {
+  const i = orientQueue.indexOf(path);
+  if (i >= 0) orientQueue.splice(i, 1);
+}
+
 async function detectAndCacheOrientation(path) {
   const cached = await invoke('get_orientation', { path }).catch(() => null);
   if (cached != null) return; // 已缓存（含 0/-1），跳过
+
+  // 手动指定排版方向时无需逐本检测，也**不写缓存**：手动方向是全局临时覆盖，
+  // 切回「自动」后这些书仍要现场识别，不能把手动方向固化进缓存。
+  const setting = await loadOrientationSetting();
+  if (setting === 'vertical' || setting === 'horizontal') return;
+
   const bytes = await invoke('read_pdf', { path });
   const doc = await pdfjsLib.getDocument({ data: new Uint8Array(bytes) }).promise;
   try {
@@ -3512,12 +3691,18 @@ async function detectAndCacheOrientation(path) {
 // 从书架点开一本书：校验 + 触发扫描件归一化 → 加载 → 进入阅读器并记录最近阅读。
 async function openBook(path, name) {
   thumbQueue.length = 0; // 先停掉封面生成，避免与即将加载的大文件抢磁盘/内存
+  // 点开的书会现场检测方向：先从预热队列摘掉（避免后台重复读），再暂停整个队列，
+  // 让「读 PDF + 现场检测 + 页面渲染」独占资源；加载完成（成功或失败）后再恢复。
+  dequeueOrientation(path);
+  pauseOrientationQueue();
   try {
     await invoke('open_pdf_path', { path });
     await loadPdfDocument(path, name);
     invoke('record_recent', { path, name }).catch(() => {});
   } catch (err) {
     reportOpenError('打开失败：' + err);
+  } finally {
+    resumeOrientationQueue();
   }
 }
 
@@ -3633,13 +3818,32 @@ async function buildThumb(path) {
 }
 
 function bindEvents() {
+  // 外部链接：target="_blank" 的 http(s) 链接交给系统默认浏览器打开，避免 WebView 内部导航。
+  document.addEventListener('click', (e) => {
+    const a = e.target && e.target.closest ? e.target.closest('a[target="_blank"]') : null;
+    if (!a) return;
+    const href = a.getAttribute('href') || '';
+    if (/^https?:\/\//i.test(href)) {
+      e.preventDefault();
+      invoke('open_external', { url: href }).catch(() => {});
+    }
+  });
   $('btn-shelf').addEventListener('click', showShelf);
+  $('shelf-title').addEventListener('click', () => {
+    const body = document.querySelector('.shelf-body');
+    if (body) body.scrollTop = 0;
+    if (currentFolder) {
+      currentFolder = null;
+      renderShelf();
+    }
+  });
+  document.querySelector('.shelf-body').addEventListener('scroll', updateShelfTitle);
   $('btn-add-books').addEventListener('click', addBooks);
   $('btn-add-folder').addEventListener('click', addFolder);
   $('btn-open-pdf').addEventListener('click', openPdf);
   $('btn-open').addEventListener('click', openPdf);
-  $('btn-prev').addEventListener('click', () => goTo(state.pageNum - 1));
-  $('btn-next').addEventListener('click', () => goTo(state.pageNum + 1));
+  bindPageStepper('btn-prev', -1);
+  bindPageStepper('btn-next', 1);
   $('page-input').addEventListener('change', (e) => goTo(Number(e.target.value)));
 
   // 点菜单栏「放大/缩小」按钮时以视口中心为缩放锚点（zoom 的 clientX/Y 传 null 即取中心），
@@ -3650,8 +3854,11 @@ function bindEvents() {
   $('btn-extract').addEventListener('click', extractText);
   $('btn-extract-pages').addEventListener('click', openExtractPages);
   $('btn-export').addEventListener('click', exportText);
-  $('btn-export-word').addEventListener('click', exportWord);
-  $('btn-export-word-tr').addEventListener('click', exportWordTranslated);
+  // 「导出 Word」按钮现直接走原生导出（pdfomml）；旧的 exportWord（前端提取重建）暂时屏蔽，函数保留。
+  $('btn-export-word').addEventListener('click', () => openExportRange('native'));
+  $('btn-export-word-tr').addEventListener('click', () => openExportRange('translated'));
+  $('export-native-range-form').addEventListener('submit', (e) => { e.preventDefault(); submitExportNativeRange(); });
+  $('btn-cancel-export-native').addEventListener('click', closeExportNativeRange);
   $('btn-translate').addEventListener('click', translate);
   $('btn-copy').addEventListener('click', copyTranslation);
   $('btn-settings').addEventListener('click', openSettings);
@@ -3669,6 +3876,8 @@ function bindEvents() {
   document.querySelectorAll('.settings-tab').forEach((btn) => {
     btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab));
   });
+  $('cfg-engine').addEventListener('change', updateEngineVisibility);
+  $('cfg-glm-key').addEventListener('input', updateEngineVisibility);
   $('extract-pages-form').addEventListener('submit', (e) => { e.preventDefault(); exportPagesToPdf(); });
   $('btn-cancel-extract').addEventListener('click', closeExtractPages);
   $('activate-form').addEventListener('submit', (e) => { e.preventDefault(); submitActivate(); });
@@ -3712,7 +3921,8 @@ function bindEvents() {
     if (e.shiftKey) {
       e.preventDefault();
       const dy = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
-      $('viewer').scrollTop -= dy;
+      // 仅当页面纵向溢出（放大后比窗口高）时才允许上下移动；适应/更小时锁定。
+      if ($('viewer').scrollHeight > $('viewer').clientHeight + 1) $('viewer').scrollTop -= dy;
       return;
     }
     if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; // 原生横向滚动处理
@@ -3758,6 +3968,11 @@ function bindEvents() {
       }
     }, 160);
   });
+
+  // 竖排容器高度随 viewer 尺寸变化（窗口缩放、目录位置切换等）同步，避免适应高度后纵向溢出。
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => syncRtlMinHeight()).observe($('viewer'));
+  }
 
   // 滚动时更新「当前页」指示（rAF 节流），并标记滚动中（低清渲染）。
   let scrollScheduled = false;
@@ -3848,7 +4063,8 @@ function bindEvents() {
     const dx = e.clientX - pan.sx;
     const dy = e.clientY - pan.sy;
     viewerEl.scrollLeft -= dx;
-    viewerEl.scrollTop -= dy;
+    // 仅当页面纵向溢出（放大后比窗口高）时才允许上下平移；适应/更小时锁定。
+    if (viewerEl.scrollHeight > viewerEl.clientHeight + 1) viewerEl.scrollTop -= dy;
     pan.sx = e.clientX;
     pan.sy = e.clientY;
   });
@@ -3895,7 +4111,7 @@ function initToolbarOverflow() {
   const moreWrap = $('more-wrap');
   const btnMore = $('btn-more');
   const collapseOrder = [
-    'btn-extract', 'btn-extract-pages', 'btn-translate', 'btn-export',
+    'btn-extract', 'btn-translate', 'btn-extract-pages', 'btn-export',
     'btn-zoom-out', 'btn-zoom-in', 'btn-fit',
   ];
   const exportIds = ['btn-export-word', 'btn-export-word-tr'];

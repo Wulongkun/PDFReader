@@ -3,6 +3,12 @@
 //! 逐字节移植自 omml-converter 的 `mtef.py`（反推自 jure/mathtype 的 fixture 文件），
 //! 结构约定见文件头注释。产物由 [`super::ole::mtef_to_ole`] 包成 OLE 复合文件后
 //! 嵌入 `.docx`，双击即可在 MathType 中编辑。
+//!
+//! 注意：OMML 接入导出后，本模块（连同 [`super::ole`]）已不再被导出路径调用，
+//! 保留作为 MathType OLE 的兜底/参考实现。
+
+// MathType OLE 兜底实现；导出已改用 OMML（见 super::omml），故抑制 dead_code 告警。
+#![allow(dead_code)]
 
 use super::latex_ast::{self, Node};
 
@@ -38,9 +44,11 @@ pub fn latex_to_mtef(latex: &str) -> Vec<u8> {
         Vec::with_capacity(header.len() + PREAMBLE_BODY.len() + eq_bytes.len() + 8);
     out.extend_from_slice(&header);
     out.extend_from_slice(PREAMBLE_BODY);
+    // 直接 FULL + LINE + 内容 + END，与真实 MathType 5 夹具结构一致。不要加显式
+    // 点尺寸的 SIZE 记录：size_select=101 的值按「点尺寸取负」存储，旧值 320 会
+    // 被解成 -320 → MathType 报「宽度或高度超出范围」。全尺寸由 FULL + EQN_PREFS 决定。
     out.push(FULL);
     out.extend_from_slice(&line(false));
-    out.extend_from_slice(&size_display());
     out.extend_from_slice(&eq_bytes);
     out.push(END);
     out
@@ -82,10 +90,6 @@ fn char_rec_with_embellishment(typeface: u8, unicode: u32, embell: u8) -> Vec<u8
         embell,
         0x00, // 结束 embellishment 列表
     ]
-}
-
-fn size_display() -> [u8; 4] {
-    [0x09, 0x65, 0x40, 0x01]
 }
 
 fn tmpl_header(selector: u8, variation: u8) -> [u8; 5] {

@@ -3,8 +3,11 @@
 //! 约定：所有命令的错误都统一映射成 `String` 返回给前端，
 //! 便于直接展示为可读的提示信息。
 
+use tauri::Manager;
 use tauri::State;
 use tauri::Emitter;
+
+use pdfomml::{Backend, Converter, Engine};
 
 use crate::{
     app::AppState,
@@ -214,6 +217,15 @@ pub fn remove_book(state: State<'_, AppState>, path: String) -> Result<Library, 
     Ok(lib.clone())
 }
 
+/// 从「最近阅读」移除一条记录（只清历史，不删除书架条目或磁盘文件）。
+#[tauri::command]
+pub fn remove_recent(state: State<'_, AppState>, path: String) -> Result<Library, String> {
+    let mut lib = state.library.lock().map_err(|e| e.to_string())?;
+    lib.recent.retain(|r| r.path != path);
+    lib.save().map_err(|e| e.to_string())?;
+    Ok(lib.clone())
+}
+
 /// 列出某目录的直接子项（子目录在前、PDF 随后），用于「点击文件夹进入浏览」。
 #[tauri::command]
 pub fn list_folder(path: String) -> Result<library::FolderContents, String> {
@@ -278,6 +290,21 @@ pub fn record_recent(
     lib.recent.truncate(30);
     lib.save().map_err(|e| e.to_string())?;
     Ok(lib.clone())
+}
+
+/// 读取某本书上次阅读页；未记录返回 `None`。
+#[tauri::command]
+pub fn get_last_page(state: State<'_, AppState>, path: String) -> Result<Option<u32>, String> {
+    let lib = state.library.lock().map_err(|e| e.to_string())?;
+    Ok(lib.page_positions.get(&path).copied())
+}
+
+/// 记录某本书的阅读页（按 PDF 路径键控），并持久化。
+#[tauri::command]
+pub fn set_last_page(state: State<'_, AppState>, path: String, page: u32) -> Result<(), String> {
+    let mut lib = state.library.lock().map_err(|e| e.to_string())?;
+    lib.page_positions.insert(path, page.max(1));
+    lib.save().map_err(|e| e.to_string())
 }
 
 /// 保存封面缩略图 PNG：`key` 为前端 fnv1a(path) 的十六进制键，写入 `thumbs/{key}.png`。
@@ -415,6 +442,27 @@ pub fn save_ocr_raw(text: String) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// 用系统默认浏览器打开外部链接（激活码获取页 / QQ 群等）。仅允许 http/https。
+#[tauri::command]
+pub fn open_external(url: String) -> Result<(), String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("仅允许打开 http/https 链接".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // `cmd /c start "" <url>`：用 ShellExecute 走默认浏览器，不阻塞本进程。
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", &url])
+            .spawn()
+            .map_err(|e| format!("打开链接失败：{e}"))?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = url;
+    }
+    Ok(())
+}
+
 /// Rust 侧文字提取入口（占位）。前端 PDF.js 已负责文本层提取。
 #[tauri::command]
 pub fn extract_text(pdf_data_url: String) -> Result<Vec<extract::PageText>, String> {
@@ -474,9 +522,13 @@ pub fn get_config(state: State<'_, AppState>) -> Result<Config, String> {
 
 /// 保存配置到本地，并更新内存中的状态。
 #[tauri::command]
-pub fn set_config(state: State<'_, AppState>, config: Config) -> Result<(), String> {
+pub fn set_config(state: State<'_, AppState>, mut config: Config) -> Result<(), String> {
+    // 授权信息由激活流程单独写入，设置对话框只管模型/OCR/排版；整体替换前保留已激活票据，
+    // 避免用户改个模型或排版方向就把 Pro 激活给抹掉。
+    let mut guard = state.config.lock().map_err(|e| e.to_string())?;
+    config.license = guard.license.clone();
     config.save().map_err(|e| e.to_string())?;
-    *state.config.lock().map_err(|e| e.to_string())? = config;
+    *guard = config;
     Ok(())
 }
 
@@ -709,53 +761,18 @@ pub struct DocxParagraph {
     pub image: Option<DocxImage>,
 }
 
-/// 公式预览图：前端 MathJax 渲染的 PNG 及其自然尺寸（CSS 像素）。
-#[derive(serde::Deserialize)]
-pub struct MathPreview {
-    pub latex: String,
-    pub png_data_url: String,
-    /// 预览图自然宽度（CSS 像素，用于换算成 Word 里的显示尺寸）。
-    #[serde(default)]
-    pub width: f32,
-    /// 预览图自然高度（CSS 像素）。
-    #[serde(default)]
-    pub height: f32,
-}
-
-/// `export_docx` 的参数：结构化段落列表 + 建议文件名 + 公式预览图。
+/// `export_docx` 的参数：结构化段落列表 + 建议文件名。
 #[derive(serde::Deserialize)]
 pub struct ExportDocxRequest {
     pub paragraphs: Vec<DocxParagraph>,
     pub suggested_name: String,
-    #[serde(default)]
-    pub previews: Vec<MathPreview>,
-}
-
-/// 汇总正文里所有去重后的 LaTeX 公式源码，供前端批量渲染预览图。
-///
-/// 与 `export_docx` 使用同一套 `split_math` 切分，保证两边公式集合一致。
-#[tauri::command]
-pub fn collect_math(paragraphs: Vec<DocxParagraph>) -> Result<Vec<String>, String> {
-    use std::collections::BTreeSet;
-    let mut set = BTreeSet::new();
-    for p in &paragraphs {
-        for seg in crate::translate::latex::split_math(&p.text) {
-            if let crate::translate::latex::MathSegment::Math { latex, .. } = seg {
-                let key = latex.trim().to_string();
-                if !key.is_empty() {
-                    set.insert(key);
-                }
-            }
-        }
-    }
-    Ok(set.into_iter().collect())
 }
 
 /// 把一组结构化段落翻译成目标语言，返回同结构段落（标题层级 / 字号 / 加粗 / 居中 /
 /// 缩进 / 表格 / 图片原样保留，只替换文字）。
 ///
 /// 公式用 `⟦M数字⟧` 占位符保护、不参与翻译，翻译后按原样还原（保留 `$...$` /
-/// `$$...$$` 定界符），再交给 [`export_docx`] 走同一套 OLE 注入，保证翻译版 Word
+/// `$$...$$` 定界符），再交给 [`export_docx`] 走同一套 OMML 注入，保证翻译版 Word
 /// 与原文版格式一致。
 ///
 /// 翻译采用**有界并发**（默认 6 路），逐段/逐单元格并发请求，避免串行请求的往返延迟
@@ -951,8 +968,8 @@ async fn translate_protecting_math(
 /// 应用原文字号 / 加粗 / 斜体 / 居中，标题设置大纲级别使其在导航窗格可见）。
 ///
 /// 正文里的 LaTeX 公式（`$...$` / `$$...$$`）会在**本地**（确定性、无网络）
-/// 转成 MathType OLE 对象（ProgID `Equation.DSMT4`，内含 MTEF 二进制）嵌入文档，
-/// 并附带一张前端 MathJax 渲染的 PNG 预览，使 Word 在未装 MathType 时也能正确显示。
+/// 转成 Word 原生可编辑公式（OMML，`<m:oMath>`）嵌入文档，无需安装 MathType
+/// 即可在 Word 里双击编辑。
 #[tauri::command]
 pub async fn export_docx(
     state: State<'_, AppState>,
@@ -988,24 +1005,10 @@ pub async fn export_docx(
         );
     }
 
-    // 预览图查表：latex（去定界符、trim 后）→ (PNG 字节, 宽 pt, 高 pt)。
-    let mut preview_map: std::collections::HashMap<String, (Vec<u8>, f32, f32)> =
-        std::collections::HashMap::new();
-    for pv in &request.previews {
-        let bytes = match reader::from_data_url(&pv.png_data_url) {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        // CSS 像素 → 点（1px = 0.75pt，96dpi 约定）。
-        let w_pt = (pv.width * 0.75).max(8.0);
-        let h_pt = (pv.height * 0.75).max(8.0);
-        preview_map.insert(pv.latex.trim().to_string(), (bytes, w_pt, h_pt));
-    }
-
-    let mut ole_replacements: Vec<String> = Vec::new(); // 与占位符 @@OLE{n}@@ 一一对应
-    let mut ole_bins: Vec<Vec<u8>> = Vec::new(); // word/embeddings/oleObject{n}.bin
-    let mut pngs: Vec<Vec<u8>> = Vec::new(); // word/media/image{n}.png
-    let mut ole_index = 0usize;
+    // 公式的 OMML 片段，与占位符 @@OMML{n}@@ 一一对应；注入 document.xml 后即为
+    // Word 原生可编辑公式。
+    let mut omml_replacements: Vec<String> = Vec::new();
+    let mut omml_index = 0usize;
 
     // 判断文档语言：译文/中文原文走中文排版，英文原文走西文排版。
     let is_chinese = request.paragraphs.iter().any(|p| is_cjk(&p.text));
@@ -1066,8 +1069,8 @@ pub async fn export_docx(
         while i < segments.len() {
             if matches!(&segments[i], MathSegment::Math { display: true, .. }) {
                 if let Some(par) = build_math_paragraph(
-                    p, &group, false, is_chinese, &preview_map,
-                    &mut ole_replacements, &mut ole_bins, &mut pngs, &mut ole_index,
+                    p, &group, false, is_chinese,
+                    &mut omml_replacements, &mut omml_index,
                 ) {
                     doc = doc.add_paragraph(par);
                     emitted = true;
@@ -1087,8 +1090,8 @@ pub async fn export_docx(
                     break;
                 }
                 if let Some(par) = build_math_paragraph(
-                    p, &disp, true, is_chinese, &preview_map,
-                    &mut ole_replacements, &mut ole_bins, &mut pngs, &mut ole_index,
+                    p, &disp, true, is_chinese,
+                    &mut omml_replacements, &mut omml_index,
                 ) {
                     doc = doc.add_paragraph(par);
                     emitted = true;
@@ -1100,8 +1103,8 @@ pub async fn export_docx(
             }
         }
         if let Some(par) = build_math_paragraph(
-            p, &group, false, is_chinese, &preview_map,
-            &mut ole_replacements, &mut ole_bins, &mut pngs, &mut ole_index,
+            p, &group, false, is_chinese,
+            &mut omml_replacements, &mut omml_index,
         ) {
             doc = doc.add_paragraph(par);
             emitted = true;
@@ -1113,15 +1116,12 @@ pub async fn export_docx(
         }
     }
 
-    // 生成各 OPC 部件，再注入 OLE 对象、关系与内容类型。
+    // 生成 OPC 部件，再注入 OMML 公式片段。
     let mut xmldoc = doc.build();
     xmldoc.document =
-        inject_ole_document(std::mem::take(&mut xmldoc.document), &ole_replacements);
-    xmldoc.document_rels =
-        inject_ole_rels(std::mem::take(&mut xmldoc.document_rels), ole_bins.len());
-    xmldoc.content_type = inject_ole_content_type(std::mem::take(&mut xmldoc.content_type));
+        inject_omml_document(std::mem::take(&mut xmldoc.document), &omml_replacements);
 
-    pack_docx(xmldoc, &ole_bins, &pngs, handle.path())?;
+    pack_docx(xmldoc, handle.path())?;
     Ok(handle.path().to_string_lossy().into_owned())
 }
 
@@ -1181,11 +1181,8 @@ fn build_math_paragraph(
     segments: &[crate::translate::latex::MathSegment],
     display: bool,
     is_chinese: bool,
-    preview_map: &std::collections::HashMap<String, (Vec<u8>, f32, f32)>,
-    ole_replacements: &mut Vec<String>,
-    ole_bins: &mut Vec<Vec<u8>>,
-    pngs: &mut Vec<Vec<u8>>,
-    ole_index: &mut usize,
+    omml_replacements: &mut Vec<String>,
+    omml_index: &mut usize,
 ) -> Option<docx_rs::Paragraph> {
     use crate::translate::latex::{self, MathSegment};
 
@@ -1216,11 +1213,6 @@ fn build_math_paragraph(
             _ => {}
         }
     }
-
-    // 公式显示尺寸随正文字号等比缩放：MathJax 默认 16px em ≈ 12pt；
-    // 但 MathJax 的 SVG 高度含整行 ascender/descender，视觉上比同字号正文略高，
-    // 故分母取 16（介于「过大的 14」与「过小的 18」之间）。正文字号未知时按 12pt 缩放。
-    let scale = if p.size > 0.0 { (p.size / 16.0).clamp(0.5, 3.0) } else { 12.0 / 16.0 };
 
     // 行内公式与相邻文本之间补空格：prev_ended_space 记录「上一个 run 是否以空白结尾」，
     // 为 false 时给下一个 run 补前导空格。
@@ -1261,51 +1253,14 @@ fn build_math_paragraph(
             }
             MathSegment::Math { latex, .. } => {
                 let key = latex.trim().to_string();
-                let need_lead = !prev_ended_space;
-                match preview_map.get(&key) {
-                    Some((png_bytes, w_pt, h_pt)) => {
-                        if need_lead {
-                            paragraph = paragraph.add_run(docx_rs::Run::new().add_text(" "));
-                        }
-                        let n = *ole_index;
-                        let mtef = crate::translate::mtef::latex_to_mtef(&key);
-                        let ole = crate::translate::ole::mtef_to_ole(&mtef);
-                        let w_scaled = (w_pt * scale).max(6.0);
-                        let h_scaled = (h_pt * scale).max(6.0);
-                        // 显示尺寸：pt → twip（1pt = 20 twip）。
-                        let twip_w = (w_scaled * 20.0).round().max(20.0) as i64;
-                        let twip_h = (h_scaled * 20.0).round().max(20.0) as i64;
-                        let shape_id = format!("_x0000_i{}", 1025 + n);
-                        let object_id = format!("_{}", 1523517050u64 + n as u64);
-                        let img_rid = format!("rId{}", 1000 + n * 2);
-                        let ole_rid = format!("rId{}", 1000 + n * 2 + 1);
-                        // <w:object> 是 <w:r> 的子节点：只关闭 <w:t>、对象后重开 <w:t>，
-                        // 使对象落在占位符所在的 run 内部。
-                        let repl = format!(
-                            "</w:t><w:object w:dxaOrig=\"{twip_w}\" w:dyaOrig=\"{twip_h}\"><v:shape id=\"{shape_id}\" type=\"#_x0000_t75\" style=\"width:{w_scaled:.2}pt;height:{h_scaled:.2}pt\" o:ole=\"\"><v:imagedata r:id=\"{img_rid}\" o:title=\"\"/></v:shape><o:OLEObject Type=\"Embed\" ProgID=\"Equation.DSMT4\" ShapeID=\"{shape_id}\" DrawAspect=\"Content\" ObjectID=\"{object_id}\" r:id=\"{ole_rid}\"/></w:object><w:t>"
-                        );
-                        ole_replacements.push(repl);
-                        ole_bins.push(ole);
-                        pngs.push(png_bytes.clone());
-                        paragraph = paragraph.add_run(docx_rs::Run::new().add_text(format!("@@OLE{}@@", n)));
-                        *ole_index += 1;
-                    }
-                    // 无预览（MathJax 渲染失败）：回退为纯文本 run，不丢内容。
-                    None => {
-                        if need_lead {
-                            paragraph = paragraph.add_run(docx_rs::Run::new().add_text(" "));
-                        }
-                        let mut run = academic_fonts(docx_rs::Run::new().add_text(&key));
-                        if p.bold {
-                            run = run.bold();
-                        }
-                        if p.italic {
-                            run = run.italic();
-                        }
-                        run = run.color("000000");
-                        paragraph = paragraph.add_run(run);
-                    }
+                if !prev_ended_space {
+                    paragraph = paragraph.add_run(docx_rs::Run::new().add_text(" "));
                 }
+                let n = *omml_index;
+                let omml = crate::translate::omml::latex_to_omml(&key);
+                omml_replacements.push(omml);
+                paragraph = paragraph.add_run(docx_rs::Run::new().add_text(format!("@@OMML{}@@", n)));
+                *omml_index += 1;
                 prev_ended_space = false;
                 has_content = true;
             }
@@ -1315,57 +1270,24 @@ fn build_math_paragraph(
     if has_content { Some(paragraph) } else { None }
 }
 
-/// 把 `@@OLE{n}@@` 占位符替换成 `<w:object>` 片段。
-/// 根元素已自带 `xmlns:v` / `xmlns:o` / `xmlns:r`，无需额外命名空间声明。
-fn inject_ole_document(document: Vec<u8>, replacements: &[String]) -> Vec<u8> {
+/// 把 `@@OMML{n}@@` 占位符替换成 `<m:oMath>` 片段。
+/// 占位符位于某个 `<w:r>` 的 `<w:t>` 文本内；`<m:oMath>` 是 `<w:p>` 的子节点（run 的
+/// 兄弟），故替换时先关闭该 run，插入公式片段，再重开一个空 run，保证 XML 结构合法。
+/// 公式片段自带 `xmlns:m` / `xmlns:w` 命名空间声明，无需改动根元素。
+fn inject_omml_document(document: Vec<u8>, replacements: &[String]) -> Vec<u8> {
     let mut xml = String::from_utf8(document).unwrap_or_default();
     for (i, repl) in replacements.iter().enumerate() {
-        xml = xml.replace(&format!("@@OLE{}@@", i), repl);
-    }
-    xml.into_bytes()
-}
-
-/// 往 `document.xml.rels` 追加 OLE 对象与预览图的关系。
-fn inject_ole_rels(document_rels: Vec<u8>, ole_count: usize) -> Vec<u8> {
-    let mut xml = String::from_utf8(document_rels).unwrap_or_default();
-    let mut extra = String::new();
-    for i in 0..ole_count {
-        let n = i + 1;
-        extra.push_str(&format!(
-            "<Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/image{}.png\"/>",
-            1000 + i * 2,
-            n
-        ));
-        extra.push_str(&format!(
-            "<Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject\" Target=\"embeddings/oleObject{}.bin\"/>",
-            1000 + i * 2 + 1,
-            n
-        ));
-    }
-    if !extra.is_empty() {
-        xml = xml.replacen("</Relationships>", &format!("{}</Relationships>", extra), 1);
-    }
-    xml.into_bytes()
-}
-
-/// 往 `[Content_Types].xml` 追加 `bin`（oleObject）Default 扩展名。
-fn inject_ole_content_type(content_type: Vec<u8>) -> Vec<u8> {
-    let mut xml = String::from_utf8(content_type).unwrap_or_default();
-    if !xml.contains("Extension=\"bin\"") {
-        xml = xml.replacen(
-            "</Types>",
-            "<Default Extension=\"bin\" ContentType=\"application/vnd.openxmlformats-officedocument.oleObject\"/></Types>",
-            1,
+        xml = xml.replace(
+            &format!("@@OMML{}@@", i),
+            &format!("</w:t></w:r>{repl}<w:r><w:t>"),
         );
     }
     xml.into_bytes()
 }
 
-/// 把 `XMLDocx` 各部件写成 `.docx`（OPC zip），额外追加 OLE 对象与公式预览 PNG。
+/// 把 `XMLDocx` 各部件写成 `.docx`（OPC zip）。
 fn pack_docx(
     xmldoc: docx_rs::XMLDocx,
-    ole_bins: &[Vec<u8>],
-    pngs: &[Vec<u8>],
     path: &std::path::Path,
 ) -> Result<(), String> {
     use std::io::Write;
@@ -1445,27 +1367,12 @@ fn pack_docx(
         }
     }
 
-    // 已有插图（DocxParagraph.image 的 Pic）+ 公式预览 PNG，都放进 word/media/。
-    if !media.is_empty() || !pngs.is_empty() {
+    // 已有插图（DocxParagraph.image 的 Pic）放进 word/media/。
+    if !media.is_empty() {
         zip.add_directory("word/media/", dir_opts).map_err(|e| e.to_string())?;
         for (id, bytes) in media {
             zip.start_file(format!("word/media/{}.png", id), opts).map_err(|e| e.to_string())?;
             zip.write_all(&bytes).map_err(|e| e.to_string())?;
-        }
-        for (i, png) in pngs.iter().enumerate() {
-            zip.start_file(format!("word/media/image{}.png", i + 1), opts)
-                .map_err(|e| e.to_string())?;
-            zip.write_all(png).map_err(|e| e.to_string())?;
-        }
-    }
-
-    // OLE 对象二进制。
-    if !ole_bins.is_empty() {
-        zip.add_directory("word/embeddings/", dir_opts).map_err(|e| e.to_string())?;
-        for (i, ole) in ole_bins.iter().enumerate() {
-            zip.start_file(format!("word/embeddings/oleObject{}.bin", i + 1), opts)
-                .map_err(|e| e.to_string())?;
-            zip.write_all(ole).map_err(|e| e.to_string())?;
         }
     }
 
@@ -1473,76 +1380,290 @@ fn pack_docx(
     Ok(())
 }
 
+/// 把空串转成 `None`，避免把空字符串当值传给 pdfomml 的 CLI 开关。
+fn nonempty(s: String) -> Option<String> {
+    let t = s.trim().to_string();
+    if t.is_empty() { None } else { Some(t) }
+}
+
+/// 按优先级收集 pdfomml 后端候选（只做静态查找，不启动进程）：
+/// 1) 打进安装包的 PyInstaller sidecar（生产环境 `<resource_dir>/pdfomml/pdfomml.exe`）；
+/// 2) 源码目录里的 sidecar（开发环境 `cargo tauri dev`）；
+/// 3) 兜底自动发现（`PDFOMML_BIN` / `PDFOMML_PYTHON` 环境变量、PATH 上的 `pdfomml` / `python`）。
+/// 前两者免 Python，「换一台电脑也能跑」。
+fn pdfomml_candidates(app: &tauri::AppHandle) -> Vec<Backend> {
+    let mut out = Vec::new();
+    let res_dir = app.path().resource_dir().map(|p| p.display().to_string())
+        .unwrap_or_else(|e| format!("<不可用:{e}>"));
+    let mut notes = vec![format!("resource_dir={res_dir}")];
+    if let Ok(res) = app.path().resource_dir() {
+        let exe = res.join("pdfomml").join("pdfomml.exe");
+        if exe.is_file() {
+            notes.push(format!("打包候选存在:{}", exe.display()));
+            out.push(Backend::Executable(exe));
+        } else {
+            notes.push(format!("打包候选缺失:{}", exe.display()));
+        }
+    }
+    let dev = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..").join("..").join("pdfomml").join("rust").join("pdfomml")
+        .join("sidecar").join("pdfomml").join("pdfomml.exe");
+    if let Ok(canon) = std::fs::canonicalize(&dev) {
+        if canon.is_file() {
+            notes.push(format!("源码候选存在:{}", canon.display()));
+            out.push(Backend::Executable(canon));
+        }
+    } else {
+        notes.push(format!("源码候选缺失:{}", dev.display()));
+    }
+    out.extend(Backend::candidates());
+    append_log(&format!("pdfomml 候选清单（共 {} 个）：{}", out.len(), notes.join("；")));
+    out
+}
+
+/// 解析一个**可用**的 pdfomml 后端：按候选顺序逐个探测（跑 `--list-engines`），
+/// 返回第一个能通过能力探测的；全部失败则返回最后一条错误。
+///
+/// 不能只看 `is_file()` 就返回——`target/debug/pdfomml/` 里可能残留被 Tauri 资源
+/// 打包「扁平化」弄坏的 sidecar（缺 `_internal/`），看着存在实则跑不起来。
+fn resolve_pdfomml_backend(app: &tauri::AppHandle) -> Result<Backend, String> {
+    let candidates = pdfomml_candidates(app);
+    if candidates.is_empty() {
+        return Err("未找到 pdfomml 后端：请确认 sidecar 已打包，或本机已安装 pdfomml（pip install .）"
+            .to_string());
+    }
+    let mut tried: Vec<String> = Vec::new();
+    for (i, b) in candidates.iter().enumerate() {
+        match b.probe() {
+            Ok(_) => {
+                append_log(&format!("pdfomml 后端命中第 {} 个候选", i + 1));
+                return Ok(b.clone());
+            }
+            Err(e) => tried.push(format!("候选{}（{}）", i + 1, e)),
+        }
+    }
+    // 逐个候选的失败原因写进 diag.log，方便离线定位（错误本身会先于写日志返回给前端）。
+    append_log(&format!(
+        "pdfomml 后端探测全部失败（{} 个候选）：{}",
+        candidates.len(),
+        tried.join("  ||  ")
+    ));
+    Err(format!(
+        "pdfomml 后端不可用（已尝试 {} 个候选）：{}",
+        candidates.len(),
+        tried.join("；")
+    ))
+}
+
+/// 按统一识别引擎（`ocr.mode`）组装 Converter：`vlm` → OpenAI 兼容视觉、`glm-ocr` → 智谱、
+/// 其余（`null`）→ 离线不识别（公式区域保留为图片，文字/表格/插图完整）。
+///
+/// `translate` 非空时额外把正文翻译成目标语言（`--translate` 及接口参数追加到 CLI）。
+fn build_native_converter(
+    app: &tauri::AppHandle,
+    cfg: &crate::config::Config,
+    pages: Option<String>,
+    translate: Option<&crate::config::TranslateConfig>,
+) -> Result<Converter, String> {
+    let backend = resolve_pdfomml_backend(app)?;
+    let mut builder = Converter::builder().backend(backend).pages(pages);
+    builder = match cfg.word_engine() {
+        "glm-ocr" => builder.engine(Engine::GlmOcr {
+            api_key: nonempty(cfg.word.glm_api_key.clone()),
+            api_base: None,
+            model: None,
+        }),
+        "vlm" => builder.engine(Engine::Vlm {
+            api_base: nonempty(cfg.word.api_base.clone()),
+            api_key: nonempty(cfg.word.api_key.clone()),
+            model: nonempty(cfg.word.model.clone()),
+        }),
+        _ => builder.engine(Engine::Null),
+    };
+    if cfg.word.formula_format == "mathtype" {
+        builder = builder.extra_args(["--formula-format".to_string(), "mathtype".to_string()]);
+    }
+    if let Some(t) = translate {
+        let target = t.target_lang.trim().to_string();
+        if !target.is_empty() {
+            let mut args = vec!["--translate".to_string(), target];
+            if let Some(src) = nonempty(t.source_lang.clone()) {
+                args.push("--translate-source".to_string());
+                args.push(src);
+            }
+            if let Some(base) = nonempty(t.base_url.clone()) {
+                args.push("--translate-api-base".to_string());
+                args.push(base);
+            }
+            if let Some(key) = nonempty(t.api_key.clone()) {
+                args.push("--translate-api-key".to_string());
+                args.push(key);
+            }
+            if let Some(model) = nonempty(t.model.clone()) {
+                args.push("--translate-model".to_string());
+                args.push(model);
+            }
+            builder = builder.extra_args(args);
+        }
+    }
+    builder.build().map_err(|e| e.to_string())
+}
+
+/// 用 pdfomml 把原始 PDF 直接转成带 Word 原生可编辑公式（OMML）的 `.docx`。
+///
+/// 与 [`export_docx`]（前端提取文字 + docx_rs 重建）不同，这里整份 PDF 交给
+/// pdfomml 处理：文字层抽取 + 公式区域裁剪识别 + 扫描页整页 OCR + 表格/插图还原，
+/// 公式在 Word 里双击即可编辑。引擎由「设置 → 原生 Word」决定。
+#[tauri::command]
+pub async fn export_word_native(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    suggested_name: String,
+    pages: Option<String>,
+) -> Result<String, String> {
+    require_pro(&state)?;
+    if !std::path::Path::new(&path).is_file() {
+        return Err("未找到 PDF 文件".to_string());
+    }
+    let cfg = state.config.lock().map_err(|e| e.to_string())?.clone();
+    let converter = build_native_converter(&app, &cfg, pages, None)?;
+
+    let handle = rfd::AsyncFileDialog::new()
+        .add_filter("Word 文档", &["docx"])
+        .set_file_name(&suggested_name)
+        .save_file()
+        .await
+        .ok_or_else(|| "已取消导出".to_string())?;
+    let out = handle.path().to_path_buf();
+
+    // 转换是阻塞子进程（扫描件可能数秒到数分钟），丢到 spawn_blocking 避免卡住 tokio 线程。
+    // 逐页进度通过 `export-native-progress` 事件上报，前端状态栏显示「正在导出 X/Y 页」。
+    let path_for_block = path.clone();
+    let out_for_block = out.clone();
+    let app_for_progress = app.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        converter.convert_with_progress(
+            &path_for_block,
+            Some(&out_for_block),
+            move |done: u32, total: u32, phase: String| {
+                let _ = app_for_progress.emit(
+                    "export-native-progress",
+                    serde_json::json!({ "done": done, "total": total, "phase": phase }),
+                );
+            },
+        )
+    })
+    .await
+    .map_err(|e| format!("转换线程异常：{e}"))?
+    .map_err(|e| e.to_string())?;
+
+    append_log(&format!(
+        "原生 Word 导出：{}（引擎 {}，公式格式 {}，{}）",
+        out.display(),
+        report.engine,
+        cfg.word.formula_format,
+        report.summary()
+    ));
+    Ok(out.to_string_lossy().into_owned())
+}
+
+/// 用 pdfomml 把原始 PDF 直接转成「翻译版」`.docx`：正文翻译成目标语言，
+/// 公式/插图保留，公式格式与 [`export_word_native`] 一致（omml/mathtype）。
+/// 翻译走 [`crate::config::TranslateConfig`]（base_url/api_key/model），
+/// 公式识别引擎仍由「设置 → 原生 Word」决定。
+#[tauri::command]
+pub async fn export_word_translated_native(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    suggested_name: String,
+    pages: Option<String>,
+) -> Result<String, String> {
+    require_pro(&state)?;
+    if !std::path::Path::new(&path).is_file() {
+        return Err("未找到 PDF 文件".to_string());
+    }
+    let cfg = state.config.lock().map_err(|e| e.to_string())?.clone();
+    if cfg.translate.api_key.trim().is_empty() {
+        return Err("尚未配置翻译 API Key，请先打开「设置」填写".to_string());
+    }
+    let converter = build_native_converter(&app, &cfg, pages, Some(&cfg.translate))?;
+
+    let handle = rfd::AsyncFileDialog::new()
+        .add_filter("Word 文档", &["docx"])
+        .set_file_name(&suggested_name)
+        .save_file()
+        .await
+        .ok_or_else(|| "已取消导出".to_string())?;
+    let out = handle.path().to_path_buf();
+
+    let path_for_block = path.clone();
+    let out_for_block = out.clone();
+    let app_for_progress = app.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        converter.convert_with_progress(
+            &path_for_block,
+            Some(&out_for_block),
+            move |done: u32, total: u32, phase: String| {
+                let _ = app_for_progress.emit(
+                    "export-native-progress",
+                    serde_json::json!({ "done": done, "total": total, "phase": phase }),
+                );
+            },
+        )
+    })
+    .await
+    .map_err(|e| format!("转换线程异常：{e}"))?
+    .map_err(|e| e.to_string())?;
+
+    append_log(&format!(
+        "原生 Word 译文导出：{}（引擎 {}，公式格式 {}，译文 {}，{}）",
+        out.display(),
+        report.engine,
+        cfg.word.formula_format,
+        cfg.translate.target_lang,
+        report.summary()
+    ));
+    Ok(out.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
-mod docx_ole_tests {
+mod docx_omml_tests {
     use super::*;
     use std::io::Read;
 
-    /// 结构级验证：走一遍「注入 OLE 占位符 → 追加关系/内容类型 → 自打包」，
-    /// 再解包检查各部件齐全、占位符替换干净、OLE 二进制以 CFB 魔数开头。
+    /// 结构级验证：走一遍「注入 OMML 占位符 → 自打包」，再解包检查
+    /// `<m:oMath>` 注入正确、占位符替换干净、公式结构（上标）保留。
     #[test]
-    fn ole_pack_produces_valid_parts() {
+    fn omml_pack_produces_valid_parts() {
         use docx_rs::{Docx, Paragraph, Run};
 
         let doc = Docx::new().add_paragraph(
-            Paragraph::new().add_run(Run::new().add_text("前缀 @@OLE0@@ 后缀")),
+            Paragraph::new().add_run(Run::new().add_text("前缀 @@OMML0@@ 后缀")),
         );
         let xmldoc = doc.build();
 
-        let mtef = crate::translate::mtef::latex_to_mtef(r"x^2");
-        let ole = crate::translate::ole::mtef_to_ole(&mtef);
-        let png: Vec<u8> = b"\x89PNG\r\n\x1a\nfake-png".to_vec();
-        let repl = concat!(
-            "</w:t><w:object w:dxaOrig=\"600\" w:dyaOrig=\"300\">",
-            "<v:shape id=\"s1\" type=\"#_x0000_t75\" style=\"width:30pt;height:15pt\" o:ole=\"\">",
-            "<v:imagedata r:id=\"rId1000\" o:title=\"\"/></v:shape>",
-            "<o:OLEObject Type=\"Embed\" ProgID=\"Equation.DSMT4\" ShapeID=\"s1\" ",
-            "DrawAspect=\"Content\" ObjectID=\"_1\" r:id=\"rId1001\"/></w:object><w:t>",
-        )
-        .to_string();
+        let omml = crate::translate::omml::latex_to_omml(r"x^2");
 
         let mut xmldoc = xmldoc;
-        xmldoc.document = inject_ole_document(std::mem::take(&mut xmldoc.document), &[repl]);
-        xmldoc.document_rels =
-            inject_ole_rels(std::mem::take(&mut xmldoc.document_rels), 1);
-        xmldoc.content_type = inject_ole_content_type(std::mem::take(&mut xmldoc.content_type));
+        xmldoc.document = inject_omml_document(std::mem::take(&mut xmldoc.document), &[omml]);
 
-        let path = std::env::temp_dir().join(format!("pdfreader_ole_{}.docx", std::process::id()));
-        pack_docx(xmldoc, &[ole], &[png], &path).unwrap();
+        let path = std::env::temp_dir().join(format!("pdfreader_omml_{}.docx", std::process::id()));
+        pack_docx(xmldoc, &path).unwrap();
 
         let file = std::fs::File::open(&path).unwrap();
         let mut zip = zip::ZipArchive::new(file).unwrap();
 
-        let read_str = |zip: &mut zip::ZipArchive<std::fs::File>, name: &str| -> String {
-            let mut s = String::new();
-            zip.by_name(name).unwrap().read_to_string(&mut s).unwrap();
-            s
-        };
-
-        let doc_xml = read_str(&mut zip, "word/document.xml");
-        assert!(doc_xml.contains("<w:object"), "document.xml 应含 <w:object>");
-        assert!(doc_xml.contains("Equation.DSMT4"));
-        assert!(!doc_xml.contains("@@OLE"), "占位符应被替换干净");
-
-        let rels = read_str(&mut zip, "word/_rels/document.xml.rels");
-        assert!(rels.contains("media/image1.png"), "应含预览图关系");
-        assert!(rels.contains("embeddings/oleObject1.bin"), "应含 OLE 关系");
-        assert!(rels.contains("relationships/oleObject"), "OLE 关系类型正确");
-
-        let ct = read_str(&mut zip, "[Content_Types].xml");
-        assert!(ct.contains("Extension=\"bin\""), "应声明 bin 内容类型");
-
-        let mut ole_bytes = Vec::new();
-        zip.by_name("word/embeddings/oleObject1.bin")
+        let mut doc_xml = String::new();
+        zip.by_name("word/document.xml")
             .unwrap()
-            .read_to_end(&mut ole_bytes)
+            .read_to_string(&mut doc_xml)
             .unwrap();
-        assert_eq!(
-            &ole_bytes[..8],
-            &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1],
-            "OLE 对象应以 CFB 魔数开头"
-        );
-        assert!(zip.by_name("word/media/image1.png").is_ok(), "预览 PNG 应存在");
+
+        assert!(doc_xml.contains("<m:oMath"), "document.xml 应含 <m:oMath>");
+        assert!(doc_xml.contains("<m:sSup>"), "x^2 应转成上标结构");
+        assert!(!doc_xml.contains("@@OMML"), "占位符应被替换干净");
 
         let _ = std::fs::remove_file(&path);
     }

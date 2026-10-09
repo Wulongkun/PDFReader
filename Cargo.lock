@@ -2941,6 +2941,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pdfomml"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "pdfreader"
 version = "0.1.0"
 dependencies = [
@@ -2954,6 +2963,7 @@ dependencies = [
  "futures-util",
  "image",
  "lopdf",
+ "pdfomml",
  "reqwest 0.12.28",
  "rfd",
  "serde",

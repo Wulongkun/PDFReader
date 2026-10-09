@@ -8,8 +8,8 @@
 //! 设计：递归下降解析 LaTeX（见 [`super::latex_ast`]）→ 小型 AST（`Node`）→ 渲染成
 //! OMML 字符串。解析器与 MathType MTEF 编码共用，避免重复。
 
-// OMML 渲染已不再接入导出（导出改用 MathType OLE），此处保留作为可本地验证的参考实现。
-#![allow(dead_code)]
+// OMML 渲染现已接入导出：公式以 Word 原生可编辑公式（OMML）嵌入 .docx，
+// 无需安装 MathType 即可双击编辑。
 
 use super::latex_ast::{self, Node};
 

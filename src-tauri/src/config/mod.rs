@@ -13,6 +13,7 @@ pub struct Config {
     pub translate: TranslateConfig,
     pub ocr: OcrConfig,
     pub viewer: ViewerConfig,
+    pub word: NativeWordConfig,
     pub license: LicenseConfig,
 }
 
@@ -46,17 +47,30 @@ pub struct OcrConfig {
     pub glm_api_key: String,
     /// 本地 OCR 语言（BCP-47，如 `zh-Hans` / `en-US`）；`auto`（默认）跟随系统语言包。
     pub lang: String,
-    /// 竖排古籍模式：OCR 前把页面逆时针旋转 90°，让竖列变横排，修复竖排文字的乱序/换行。
-    pub vertical: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ViewerConfig {
-    /// 竖排古籍阅读模式：页面水平连续排列、从右往左读（第 1 页在最右，页码越大越靠左）。
-    pub rtl: bool,
+    /// 排版方向：`auto`（逐本自动检测）/ `horizontal`（强制横排）/ `vertical`（强制竖排）。
+    pub orientation: String,
     /// 竖排目录位置：`top`（顶部横条）或 `left`（左侧竖条）。目录为悬浮层，不影响画布。
     pub toc_position: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NativeWordConfig {
+    /// `vlm` 引擎的接口地址（OpenAI 兼容 Base URL）。
+    pub api_base: String,
+    /// `vlm` 引擎的 API Key。
+    pub api_key: String,
+    /// `vlm` 引擎的模型名。
+    pub model: String,
+    /// `glm-ocr` 引擎的智谱 API Key（形如 `<id>.<secret>`）。
+    pub glm_api_key: String,
+    /// 公式格式：`omml`（Word 原生公式，默认）/ `mathtype`（MathType OLE 对象）。
+    pub formula_format: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,7 +90,20 @@ impl Default for Config {
             translate: TranslateConfig::default(),
             ocr: OcrConfig::default(),
             viewer: ViewerConfig::default(),
+            word: NativeWordConfig::default(),
             license: LicenseConfig::default(),
+        }
+    }
+}
+
+impl Config {
+    /// 统一识别引擎：文字提取 OCR（`ocr.mode`，取值 `local` / `llm` / `glm`）与公式识别共用同一选择。
+    /// 此处把文字引擎映射为原生 Word 导出需要的标识：`llm` → `vlm`、`glm` → `glm-ocr`、其余 → `null`。
+    pub fn word_engine(&self) -> &str {
+        match self.ocr.mode.as_str() {
+            "llm" => "vlm",
+            "glm" => "glm-ocr",
+            _ => "null",
         }
     }
 }
@@ -90,19 +117,30 @@ impl Default for LicenseConfig {
 impl Default for OcrConfig {
     fn default() -> Self {
         Self {
-            mode: "local".to_string(),
+            mode: "glm".to_string(),
             model: String::new(),
             detail: "auto".to_string(),
             glm_api_key: String::new(),
             lang: "auto".to_string(),
-            vertical: false,
         }
     }
 }
 
 impl Default for ViewerConfig {
     fn default() -> Self {
-        Self { rtl: false, toc_position: "top".to_string() }
+        Self { orientation: "auto".to_string(), toc_position: "top".to_string() }
+    }
+}
+
+impl Default for NativeWordConfig {
+    fn default() -> Self {
+        Self {
+            api_base: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+            glm_api_key: String::new(),
+            formula_format: "omml".to_string(),
+        }
     }
 }
 
@@ -112,7 +150,7 @@ impl Default for TranslateConfig {
             provider: "openai-compatible".to_string(),
             base_url: "https://api.deepseek.com/v1".to_string(),
             api_key: String::new(),
-            model: "deepseek-chat".to_string(),
+            model: "deepseek-v4-flash".to_string(),
             source_lang: "auto".to_string(),
             target_lang: "中文".to_string(),
         }
