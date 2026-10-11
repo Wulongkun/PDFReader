@@ -244,7 +244,7 @@ button.link-plain {
 .qr-card {
   position: relative;
   width: 100%;
-  max-width: 340px;
+  max-width: 440px;
   border-radius: var(--radius-card);
   border: 2px solid var(--pay);
   background-color: #fff;
@@ -277,6 +277,12 @@ button.link-plain {
   margin-top: 12px;
   width: 100%;
   border-radius: var(--radius-ticket);
+  cursor: zoom-in;
+  transition: transform 0.3s ease;
+}
+
+.qr-card img:hover {
+  transform: scale(1.6);
 }
 
 .qr-caption {

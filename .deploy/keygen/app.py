@@ -15,6 +15,8 @@ import os
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -32,6 +34,10 @@ MAX_NOTE = 200
 MAX_PAGE_SIZE = 500
 SESSION_TTL = 24 * 3600
 COOKIE_NAME = "keygen_session"
+
+# 额度服务（同机 Docker 容器 pdfreader-quota，宿主机回环可达）。充值密钥放文件、绝不进浏览器。
+QUOTA_BASE = "http://127.0.0.1:8000"
+QUOTA_SECRET_PATH = "/opt/keygen/quota.secret"
 
 # ---------------------------------------------------------------- 签发算法
 
@@ -88,6 +94,36 @@ def get_password() -> str:
         with open(PASSWORD_PATH, "rb") as f:
             _password_cache = f.read().decode("utf-8").strip()
     return _password_cache
+
+
+_quota_secret_cache = None
+
+
+def get_quota_secret() -> str:
+    global _quota_secret_cache
+    if _quota_secret_cache is None:
+        try:
+            with open(QUOTA_SECRET_PATH, "r", encoding="utf-8") as f:
+                _quota_secret_cache = f.read().strip()
+        except FileNotFoundError:
+            _quota_secret_cache = ""
+    return _quota_secret_cache
+
+
+def quota_request(method: str, path: str, payload=None):
+    """服务器端调额度服务（带充值密钥），把结果原样返回给后台页面。"""
+    url = QUOTA_BASE + path
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    req.add_header("X-Topup-Secret", get_quota_secret())
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status, resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8")
+    except Exception as e:  # noqa: BLE001
+        return 0, json.dumps({"error": f"额度服务不可达：{e}"})
 
 
 # ---------------------------------------------------------------- 历史记录
@@ -412,6 +448,7 @@ _APP_HTML = r"""<!doctype html>
         <p>生成无时间限制激活码，绑定首次激活的机器。</p>
       </div>
       <div class="hbtns">
+        <a class="mini" href="quota">用户额度</a>
         <a class="mini" href="history">历史记录</a>
         <button class="mini" id="logout">退出</button>
       </div>
@@ -624,6 +661,7 @@ _HISTORY_HTML = r"""<!doctype html>
       </div>
       <div class="hbtns">
         <a class="mini" href="./">返回生成页</a>
+        <a class="mini" href="quota">用户额度</a>
         <button class="mini" id="logout">退出</button>
       </div>
     </header>
@@ -822,6 +860,197 @@ _HISTORY_HTML = r"""<!doctype html>
 """
 
 
+_QUOTA_HTML = r"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>用户额度 · PDFReader 激活码生成器</title>
+<style>
+  :root { --bg:#f4f6fb; --card:#fff; --ink:#1c2433; --muted:#67718a; --accent:#3b5bfd;
+    --accent-ink:#fff; --line:#e6e9f2; --ok:#0e8a52; --err:#d64545;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px calc(32px + env(safe-area-inset-bottom)); }
+  header { margin-bottom:18px; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  header .t h1 { margin:0 0 4px; font-size:22px; }
+  header .t p { margin:0; color:var(--muted); font-size:14px; }
+  .hbtns { display:flex; gap:8px; flex-shrink:0; }
+  .mini { border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:8px;
+    padding:7px 12px; font-size:13px; cursor:pointer; white-space:nowrap; text-decoration:none; }
+  .mini:hover { border-color:var(--accent); color:var(--accent); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:16px; }
+  .card h2 { margin:0 0 4px; font-size:15px; }
+  .hint { color:var(--muted); font-size:13px; margin:0 0 14px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .field { flex:1 1 220px; border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-size:15px; background:#fff; }
+  .field:focus { outline:none; border-color:var(--accent); }
+  .num { width:120px; border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-size:15px; background:#fff; }
+  .num:focus { outline:none; border-color:var(--accent); }
+  .btn { border:0; border-radius:10px; background:var(--accent); color:var(--accent-ink);
+    font-size:15px; font-weight:600; cursor:pointer; padding:11px 22px; }
+  .btn:hover { filter:brightness(1.06); }
+  .btn:disabled { opacity:.55; cursor:not-allowed; }
+  .status { color:var(--muted); font-size:13px; min-height:20px; margin-top:10px; }
+  .status.ok { color:var(--ok); }
+  .status.err { color:var(--err); }
+  .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; align-items:center; }
+  .search { flex:1 1 160px; min-width:0; border:1px solid var(--line); border-radius:10px; padding:8px 12px; font-size:14px; background:#fff; }
+  .search:focus { outline:none; border-color:var(--accent); }
+  .meta { color:var(--muted); font-size:13px; margin-bottom:10px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; white-space:nowrap; }
+  td.mono { font-family:var(--mono); font-size:12px; word-break:break-all; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .acc { font-family:var(--mono); font-weight:700; font-size:15px; color:var(--accent); white-space:nowrap; }
+  .op { border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:7px;
+    padding:4px 10px; font-size:12px; cursor:pointer; white-space:nowrap; }
+  .op:hover { border-color:var(--accent); color:var(--accent); }
+  .empty { color:var(--muted); text-align:center; padding:24px 0; font-size:14px; }
+  footer { text-align:center; color:var(--muted); font-size:12px; margin-top:8px; }
+  @media (max-width:560px){ .wrap{max-width:100%;} table{font-size:12px;} th,td{padding:6px;} }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="t"><h1>用户额度管理</h1><p>查看所有用户机器码 / 识别号，按识别号或机器码充值。</p></div>
+      <div class="hbtns"><a class="mini" href="./">返回生成页</a><button class="mini" id="logout">退出</button></div>
+    </header>
+
+    <section class="card">
+      <h2>充值额度</h2>
+      <p class="hint">输入用户的 <b>6 位识别号</b>（或机器码），填写要赠送的页数。</p>
+      <div class="row">
+        <input class="field" id="account" placeholder="识别号（6 位）或机器码">
+        <input class="num" id="pages" type="number" min="1" placeholder="页数">
+        <button class="btn" id="topup">充值</button>
+      </div>
+      <div class="status" id="status"></div>
+    </section>
+
+    <section class="card">
+      <div class="toolbar">
+        <input class="search" id="search" placeholder="按识别号 / 机器码搜索…">
+        <button class="mini" id="refresh" type="button">刷新</button>
+      </div>
+      <div class="meta" id="meta"></div>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr><th>识别号</th><th>机器码</th><th class="num">赠送</th><th class="num">已用</th><th class="num">剩余</th><th>最后活跃</th><th></th></tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div id="empty" class="empty">暂无账号</div>
+    </section>
+
+    <footer>充值密钥仅在服务器端使用，浏览器无法获取。</footer>
+  </div>
+<script>
+(function () {
+  var accounts = [];
+  var tbody = document.getElementById('tbody');
+  var empty = document.getElementById('empty');
+  var meta = document.getElementById('meta');
+  var statusEl = document.getElementById('status');
+  var searchEl = document.getElementById('search');
+  var accountEl = document.getElementById('account');
+  var pagesEl = document.getElementById('pages');
+  var topupBtn = document.getElementById('topup');
+
+  document.getElementById('logout').addEventListener('click', function () {
+    fetch('logout', { method: 'POST' }).finally(function () { location.reload(); });
+  });
+
+  function setStatus(msg, ok) {
+    statusEl.textContent = msg || '';
+    statusEl.className = 'status' + (ok ? ' ok' : (msg ? ' err' : ''));
+  }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function fmt(ts) {
+    if (!ts) return '—';
+    var d = new Date(ts * 1000);
+    return '' + d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + ' ' +
+      pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  function render(list) {
+    var q = searchEl.value.trim().toLowerCase();
+    var rows = q ? list.filter(function (a) {
+      return String(a.account_no).indexOf(q) >= 0 || (a.machine_id || '').toLowerCase().indexOf(q) >= 0;
+    }) : list;
+    tbody.innerHTML = '';
+    empty.style.display = rows.length ? 'none' : 'block';
+    meta.textContent = list.length ? ('共 ' + list.length + ' 个账号' + (q ? '，筛选后 ' + rows.length + ' 个' : '')) : '';
+    rows.forEach(function (a) {
+      var no = (a.account_no != null) ? String(a.account_no) : '—';
+      var tr = document.createElement('tr');
+      var tdNo = document.createElement('td'); tdNo.className = 'acc'; tdNo.textContent = no;
+      var tdMid = document.createElement('td'); tdMid.className = 'mono'; tdMid.textContent = a.machine_id || '';
+      var tdG = document.createElement('td'); tdG.className = 'num'; tdG.textContent = a.granted;
+      var tdU = document.createElement('td'); tdU.className = 'num'; tdU.textContent = a.used;
+      var tdR = document.createElement('td'); tdR.className = 'num'; tdR.textContent = a.remaining;
+      var tdL = document.createElement('td'); tdL.textContent = fmt(a.last_seen || a.created_at);
+      var tdOp = document.createElement('td');
+      var b = document.createElement('button'); b.className = 'op'; b.textContent = '充值';
+      b.addEventListener('click', function () { accountEl.value = no; pagesEl.focus(); });
+      tdOp.appendChild(b);
+      [tdNo, tdMid, tdG, tdU, tdR, tdL, tdOp].forEach(function (x) { tr.appendChild(x); });
+      tbody.appendChild(tr);
+    });
+  }
+
+  function load() {
+    fetch('api/quota/accounts')
+      .then(function (r) { if (r.status === 401) { location.reload(); return null; } return r.json(); })
+      .then(function (j) {
+        if (!j) return;
+        accounts = j.accounts || [];
+        render(accounts);
+        if (j.error) setStatus('拉取失败：' + j.error);
+      })
+      .catch(function () { setStatus('加载失败，请刷新重试'); empty.style.display = 'block'; });
+  }
+
+  searchEl.addEventListener('input', function () { render(accounts); });
+  document.getElementById('refresh').addEventListener('click', load);
+
+  topupBtn.addEventListener('click', function () {
+    var account = accountEl.value.trim();
+    var pages = parseInt(pagesEl.value, 10);
+    if (!account) { setStatus('请输入识别号或机器码'); return; }
+    if (!pages || pages <= 0) { setStatus('页数需为正整数'); return; }
+    topupBtn.disabled = true;
+    setStatus('正在充值…');
+    fetch('api/quota/topup', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account: account, pages: pages })
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (res.ok && res.j.ok) {
+          setStatus('充值成功：识别号 ' + res.j.account_no + '，剩余 ' + res.j.remaining + ' 页', true);
+          accountEl.value = ''; pagesEl.value = ''; load();
+        } else {
+          setStatus('充值失败：' + ((res.j && res.j.error) || '未知错误'));
+        }
+      })
+      .catch(function () { setStatus('充值失败：网络错误'); })
+      .finally(function () { topupBtn.disabled = false; });
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>
+"""
+
+
 # ---------------------------------------------------------------- HTTP
 
 class Handler(BaseHTTPRequestHandler):
@@ -863,8 +1092,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, _HISTORY_HTML.encode("utf-8"), "text/html; charset=utf-8")
             else:
                 self._send(200, _LOGIN_HTML.encode("utf-8"), "text/html; charset=utf-8")
+        elif self.path == "/quota":
+            if self._authed():
+                self._send(200, _QUOTA_HTML.encode("utf-8"), "text/html; charset=utf-8")
+            else:
+                self._send(200, _LOGIN_HTML.encode("utf-8"), "text/html; charset=utf-8")
         elif self.path == "/api/status":
             self._json(200, {"ok": True, "authed": self._authed()})
+        elif self.path == "/api/quota/accounts":
+            self._handle_quota_accounts()
         elif self.path.startswith("/api/history"):
             self._handle_history()
         else:
@@ -877,6 +1113,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True}, {"Set-Cookie": _logout_cookie()})
         elif self.path == "/api/issue":
             self._handle_issue()
+        elif self.path == "/api/quota/topup":
+            self._handle_quota_topup()
         else:
             self._json(404, {"error": "not found"})
 
@@ -940,6 +1178,62 @@ class Handler(BaseHTTPRequestHandler):
             "records": records, "total": total,
             "page": page, "page_size": page_size, "total_pages": total_pages,
         })
+
+    def _handle_quota_accounts(self):
+        if not self._authed():
+            self._json(401, {"error": "未登录"})
+            return
+        code, body = quota_request("GET", "/admin/accounts")
+        if code == 200:
+            try:
+                self._json(200, json.loads(body))
+            except json.JSONDecodeError:
+                self._json(502, {"accounts": [], "total": 0, "error": "额度服务响应异常"})
+            return
+        err = "额度服务不可达"
+        try:
+            parsed = json.loads(body)
+            err = parsed.get("detail") or parsed.get("error") or err
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        self._json(502, {"accounts": [], "total": 0, "error": err})
+
+    def _handle_quota_topup(self):
+        if not self._authed():
+            self._json(401, {"error": "未登录"})
+            return
+        try:
+            data = self._read_json()
+            account = str(data.get("account", "") or "").strip()
+            pages = int(data.get("pages", 0))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            self._json(400, {"ok": False, "error": "请求格式错误"})
+            return
+        if not account:
+            self._json(400, {"ok": False, "error": "请输入识别号或机器码"})
+            return
+        if pages <= 0:
+            self._json(400, {"ok": False, "error": "页数需为正整数"})
+            return
+        # 6 位纯数字按识别号处理，其余按机器码处理。
+        if account.isdigit() and len(account) == 6:
+            payload = {"account_no": int(account), "pages": pages}
+        else:
+            payload = {"machine_id": account, "pages": pages}
+        code, body = quota_request("POST", "/topup", payload)
+        try:
+            j = json.loads(body)
+            if not isinstance(j, dict):
+                j = {}
+        except json.JSONDecodeError:
+            j = {}
+        if code == 200:
+            j["ok"] = True
+            self._json(200, j)
+            return
+        err = j.get("detail") or j.get("error") or "充值失败"
+        out_code = code if code in (400, 401, 403, 404) else 502
+        self._json(out_code, {"ok": False, "error": err})
 
     def log_message(self, fmt, *args):  # noqa: A003
         sys.stderr.write("[keygen] %s - %s\n" % (self.address_string(), fmt % args))

@@ -178,36 +178,20 @@
           <div class="settings-panels">
             <section class="settings-panel active" data-panel="model">
         <div class="settings-group">
-          <span class="settings-group-title">翻译模型</span>
-          <label>API Base URL
-            <input id="cfg-base-url" type="url" placeholder="https://api.deepseek.com/v1" />
-          </label>
-          <label>API Key
-            <input id="cfg-api-key" type="password" placeholder="sk-..." />
-          </label>
-          <label>模型
-            <input id="cfg-model" type="text" placeholder="deepseek-v4-flash" />
-          </label>
-          <label>目标语言
-            <input id="cfg-target-lang" type="text" value="中文" />
-          </label>
-          <p class="hint">源语言默认自动检测。</p>
-        </div>
-        <div class="settings-group">
           <span class="settings-group-title">OCR 模型</span>
 
           <label>识别引擎
             <select id="cfg-engine">
-              <option value="local">本地（离线，公式保留为图片）</option>
-              <option value="llm">大模型（VLM，OpenAI 兼容）</option>
-              <option value="glm" selected>GLM-OCR（智谱）</option>
+              <option value="default" selected title="GLM-OCR">默认</option>
+              <option value="local" title="离线，公式保留为图片">本地</option>
+              <option value="llm" title="VLM，OpenAI 兼容">大模型</option>
+              <option value="glm" title="智谱">GLM-OCR</option>
             </select>
           </label>
 
-          <span class="settings-subtitle">公式识别（导出 Word）</span>
           <label>公式格式
             <select id="cfg-word-format">
-              <option value="omml">OMML（Word 原生公式）</option>
+              <option value="omml">Word 原生公式</option>
               <option value="mathtype">MathType 对象</option>
             </select>
           </label>
@@ -223,13 +207,12 @@
             </label>
           </div>
           <div id="glm-fields" class="engine-sub">
-            <label>GLM-OCR API Key（智谱 BigModel）
+            <label title="智谱 BigModel">API Key
               <input id="cfg-glm-key" type="password" placeholder="公式识别与文字提取共用" />
             </label>
-            <p id="glm-key-hint" class="hint">未填写 Key 将无法识别。可前往 <a href="http://yuanjingzh.cn/activate/" target="_blank" rel="noopener">http://yuanjingzh.cn/activate/</a> 获取，或改选「本地」引擎（离线、精度较低）。</p>
+            <p id="glm-key-hint" class="hint">未填写 Key 将无法识别。Key获取方式：<a href="http://yuanjingzh.cn/activate/" target="_blank" rel="noopener">http://yuanjingzh.cn/activate/</a>，或改选「本地」引擎（离线、精度较低）。</p>
           </div>
 
-          <span class="settings-subtitle">文字提取 OCR（导出文本 / 译文）</span>
           <label id="cfg-ocr-lang-row">OCR 语言
             <select id="cfg-ocr-lang">
               <option value="auto">跟随系统</option>
@@ -251,6 +234,28 @@
             </select>
           </label>
           <p class="hint">识别引擎同时作用于公式识别与文字提取：本地零依赖（公式保留为图片、不可编辑）；大模型 / GLM-OCR 需联网密钥。GLM-OCR 的 Key 两种识别共用。公式格式选 MathType 时需本机安装 MathType 才能双击编辑。</p>
+        </div>
+        <div class="settings-group">
+          <span class="settings-group-title">翻译模型</span>
+          <label>API Base URL
+            <select id="cfg-base-url-mode">
+              <option value="default">默认</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+          <label id="cfg-base-url-row" class="hidden">自定义 Base URL
+            <input id="cfg-base-url" type="url" placeholder="https://api.deepseek.com/v1" />
+          </label>
+          <label id="cfg-api-key-row">API Key
+            <input id="cfg-api-key" type="password" placeholder="sk-..." />
+          </label>
+          <label>模型
+            <input id="cfg-model" type="text" placeholder="deepseek-v4-flash" />
+          </label>
+          <label>目标语言
+            <input id="cfg-target-lang" type="text" value="中文" />
+          </label>
+          <p class="hint">源语言默认自动检测。</p>
         </div>
             </section>
             <section class="settings-panel" data-panel="layout">
@@ -277,11 +282,17 @@
               <section class="license-box">
                 <span class="h3-label"><svg class="icon"><use href="#icon-lock"/></svg>Pro 授权</span>
                 <p id="license-status" class="license-status">免费版</p>
+                <p id="quota-status" class="license-status">—</p>
+                <button type="button" id="btn-quota" class="btn">查询额度</button>
+                <div class="license-row">
+                  <span id="account-no" class="license-status" style="flex:1; align-self:center;">识别号：—</span>
+                  <button type="button" id="btn-copy-account" class="btn" disabled>复制识别号</button>
+                </div>
                 <div class="license-row">
                   <input id="license-code" type="text" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" />
                   <button type="button" id="btn-activate" class="btn">激活</button>
                 </div>
-                <p class="hint">导出 Word / 文本 / 译文为 Pro 版专属。可输入激活码并联网激活。激活码获取方式：<a href="http://yuanjingzh.cn/activate/" target="_blank" rel="noopener">http://yuanjingzh.cn/activate/</a>。可加入群组反馈问题，提出改进意见。QQ群号：1121668176。</p>
+                <p class="hint">识别额度：翻译 / 云端 OCR / 版面解析 / 导出按处理页数计费；试用赠送 50 页，激活 Pro（买断）赠送 1000 页，用完可填写自己的 API Key（不占额度）或联系作者充值。导出 Word / 文本 / 译文为 Pro 版专属。激活码获取方式：<a href="http://yuanjingzh.cn/activate/" target="_blank" rel="noopener">http://yuanjingzh.cn/activate/</a>。可加入群组反馈问题，提出改进意见。QQ群号：1121668176。</p>
               </section>
               <p class="hint">配置保存到 %APPDATA%/PDFReader/config.json</p>
               <button type="button" id="btn-manual" class="btn btn-manual"><svg class="icon"><use href="#icon-book"/></svg>用户手册</button>
@@ -298,7 +309,7 @@
     <dialog id="activate">
       <form id="activate-form">
         <h2>支持作者开发，激活 Pro 授权</h2>
-        <p class="hint">导出 Word / 文本 / 译文为 Pro 版专属。可输入激活码并联网激活。激活码获取方式：<a href="http://yuanjingzh.cn/activate/" target="_blank" rel="noopener">http://yuanjingzh.cn/activate/</a>。可加入群组反馈问题，提出改进意见。QQ群号：1121668176。</p>
+        <p class="hint">导出 Word / 文本 / 译文为 Pro 版专属；激活 Pro（买断）赠送 1000 页识别额度，用完可填写自己的 Key 或联系作者充值。可输入激活码并联网激活。激活码获取方式：<a href="http://yuanjingzh.cn/activate/" target="_blank" rel="noopener">http://yuanjingzh.cn/activate/</a>。可加入群组反馈问题，提出改进意见。QQ群号：1121668176。</p>
         <label>激活码
           <input id="activate-code" type="text" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" />
         </label>
@@ -318,6 +329,29 @@
         <footer>
           <button type="button" id="btn-no-key-settings"><svg class="icon"><use href="#icon-settings"/></svg>打开设置</button>
           <button type="button" id="btn-no-key-close"><svg class="icon"><use href="#icon-close"/></svg>关闭</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="quota-empty">
+      <form id="quota-empty-form">
+        <h2>额度已用完</h2>
+        <p class="hint">赠送额度已用完。可填写自己的 API Key（不占作者额度），或联系作者充值；购买激活码激活 Pro 可获赠 1000 页额度。QQ群号：1121668176。</p>
+        <footer>
+          <button type="button" id="btn-quota-activate"><svg class="icon"><use href="#icon-lock"/></svg>购买 / 激活 Pro</button>
+          <button type="button" id="btn-quota-settings"><svg class="icon"><use href="#icon-settings"/></svg>填写自己的 Key</button>
+          <button type="button" id="btn-quota-close"><svg class="icon"><use href="#icon-close"/></svg>关闭</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="local-ocr-hint">
+      <form id="local-ocr-hint-form">
+        <h2>本地 OCR 提示</h2>
+        <p id="local-ocr-hint-msg" class="hint">当前使用本地 OCR 离线识别。如需更高精度、更好地识别竖排古籍，可在设置里改用 GLM-OCR 或大模型 API。</p>
+        <footer>
+          <button type="button" id="btn-local-ocr-settings"><svg class="icon"><use href="#icon-settings"/></svg>打开设置</button>
+          <button type="button" id="btn-local-ocr-close"><svg class="icon"><use href="#icon-close"/></svg>知道了</button>
         </footer>
       </form>
     </dialog>

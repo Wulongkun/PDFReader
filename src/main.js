@@ -79,6 +79,128 @@ async function refreshLicenseStatus() {
   } catch { /* 拉取失败按免费处理 */ state.pro = false; updateProBadges(); return null; }
 }
 
+// ===== 试用额度（按处理页数计费） =====
+
+// 剩余页数 ≤ 此值视为「即将用完」，在设置里标黄并在本会话提醒一次。
+const QUOTA_LOW_PAGES = 10;
+let quotaLowWarned = false;   // 每会话只提醒一次，避免每次打开设置都弹
+let currentAccountNo = null;  // 6 位识别号（充值用，来自 get_quota_status）
+
+// 作者中转（New API）默认 Base URL：设置里选「默认」时用它，UI 不显示具体字符串。
+const DEFAULT_BASE_URL = 'http://yuanjingzh.cn:3000/v1';
+// 作者默认 token / GLM key（与后端 config/mod.rs 的 AUTHOR_RELAY_TOKEN / AUTHOR_GLM_KEY 一致；
+// 已随二进制与 config.json 分发）。选「默认」时前端据此回写，UI 不展示具体字符。
+const DEFAULT_API_KEY = 'sk-d63baa41de3d4cc2c87d8c6133fa3c7aedd6de6654c08232';
+const DEFAULT_GLM_KEY = '22508a51674a46a8be282735bd4ae60c.dFqklAOSCD2Ssgp6';
+
+// 把额度状态渲染到设置里（无状态参数时重新拉取）。
+function renderQuotaUi(s) {
+  const el = $('quota-status');
+  if (!el) return;
+  el.classList.remove('low', 'warn');
+  if (s && s.metered) {
+    const remaining = Number(s.remaining) || 0;
+    let text = s.message || `剩余额度：${remaining} / ${s.granted} 页`;
+    if (remaining <= 0) {
+      el.classList.add('warn');   // 已用完
+    } else if (remaining <= QUOTA_LOW_PAGES) {
+      el.classList.add('low');    // 即将用完
+      text += '（即将用完，请及时充值或填写自己的 Key）';
+    }
+    el.textContent = text;
+  } else if (s && s.message) {
+    el.textContent = s.message;
+  } else {
+    el.textContent = '—';
+  }
+}
+
+// 把 6 位识别号渲染到关于面板（充值 / 联系作者时用）。
+function renderAccountNo(s) {
+  const el = $('account-no');
+  const btn = $('btn-copy-account');
+  if (!el) return;
+  const no = s && s.account_no;
+  currentAccountNo = no || null;
+  el.textContent = no ? ('识别号：' + no) : '识别号：—';
+  if (btn) btn.disabled = !no;
+}
+
+// 从后端拉取额度状态；首次调用会触发注册（自动签发机器绑定试用 key）。
+async function refreshQuotaStatus() {
+  if (!invoke) return;
+  try {
+    const s = await invoke('get_quota_status');
+    renderQuotaUi(s);
+    renderAccountNo(s);
+    // 即将用完时提示一次（本会话），引导充值 / 激活 / 填自己的 Key。
+    const remaining = Number(s && s.remaining) || 0;
+    if (s && s.metered && remaining > 0 && remaining <= QUOTA_LOW_PAGES && !quotaLowWarned) {
+      quotaLowWarned = true;
+      setStatus(`额度仅剩 ${remaining} 页，即将用完——可填写自己的 Key、激活 Pro 或联系作者充值`);
+    }
+    return s;
+  } catch (err) {
+    // 额度服务不可达时静默降级（不影响本地 OCR 等离线功能）。
+    renderQuotaUi({ trial: false, message: '额度查询失败' });
+    renderAccountNo(null);
+    return null;
+  }
+}
+
+// 额度用完：弹窗引导购买 Pro 或填自己的 Key。
+function showQuotaEmpty() {
+  $('quota-empty').showModal();
+}
+
+function closeQuotaEmpty() {
+  $('quota-empty').close();
+}
+
+async function quotaOpenActivate() {
+  closeQuotaEmpty();
+  openActivate();
+}
+
+async function quotaOpenSettings() {
+  closeQuotaEmpty();
+  await openSettings();
+}
+
+// 复制文本到剪贴板（WebView2 下优先 navigator.clipboard，失败退到 execCommand）。
+async function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try { await navigator.clipboard.writeText(text); return; } catch { /* 退到 execCommand */ }
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } finally { ta.remove(); }
+}
+
+// 复制识别号：充值/联系作者时把 6 位识别号发给作者用。
+async function copyAccountNo() {
+  if (!currentAccountNo) { setStatus('暂无识别号，请先查询额度'); return; }
+  try {
+    await copyText(String(currentAccountNo));
+    setStatus('识别号已复制，发给作者即可充值');
+  } catch (err) {
+    setStatus('复制识别号失败：' + err);
+  }
+}
+
+// 若错误是「免费额度已用完」，弹引导弹窗并返回 true。
+function maybeQuotaExhausted(err) {
+  if (err && String(err).includes('额度已用完')) {
+    showQuotaEmpty();
+    return true;
+  }
+  return false;
+}
+
 // 用激活码在线激活；成功返回 true，失败弹提示并返回 false。
 async function activateLicense(code) {
   if (!invoke) return false;
@@ -142,6 +264,22 @@ function closeNoKeyDialog() {
 
 async function noKeyOpenSettings() {
   closeNoKeyDialog();
+  await openSettings();
+}
+
+// 首次用本地 OCR 提取文字时，弹一次提示：可改用 API 提高精度、更好识别竖排古籍。
+const LOCAL_OCR_HINT_KEY = 'local-ocr-hint-shown';
+
+function showLocalOcrHint() {
+  $('local-ocr-hint').showModal();
+}
+
+function closeLocalOcrHint() {
+  $('local-ocr-hint').close();
+}
+
+async function localOcrOpenSettings() {
+  closeLocalOcrHint();
   await openSettings();
 }
 
@@ -2529,6 +2667,15 @@ async function extractCurrentPage(withOcr, pageNo) {
 
 async function extractText() {
   if (!state.pdfDoc) return;
+  // 首次用本地引擎提取文字时，弹一次提示：可改用 API 提高精度、更好识别竖排古籍。
+  try {
+    const cfg = await invoke('get_config');
+    const mode = (cfg.ocr && cfg.ocr.mode) ? cfg.ocr.mode : 'local';
+    if (mode === 'local' && !localStorage.getItem(LOCAL_OCR_HINT_KEY)) {
+      try { localStorage.setItem(LOCAL_OCR_HINT_KEY, '1'); } catch { /* 忽略 */ }
+      showLocalOcrHint();
+    }
+  } catch { /* 读配置失败忽略提示 */ }
   showSidebar();
   const pageNo = viewportCenterPage();
   setStatus(`正在提取第 ${pageNo} 页文字…`);
@@ -2541,7 +2688,7 @@ async function extractText() {
     $('text-content').classList.remove('muted');
     setStatus(state.extractedText ? `已提取第 ${pageNo} 页文字` : '当前页未识别到文字');
   } catch (err) {
-    setStatus('提取失败：' + err);
+    if (!maybeQuotaExhausted(err)) setStatus('提取失败：' + err);
   }
 }
 
@@ -2873,7 +3020,7 @@ async function generateToc() {
     $('toc-hint').style.display = 'none';
     setStatus(items.length ? '目录已生成' : '未识别到标题');
   } catch (err) {
-    setStatus('目录生成失败：' + err);
+    if (!maybeQuotaExhausted(err)) setStatus('目录生成失败：' + err);
   } finally {
     btn.disabled = false;
   }
@@ -3224,7 +3371,7 @@ async function translate() {
     $('btn-copy').disabled = false;
     setStatus('翻译完成');
   } catch (err) {
-    setStatus('翻译失败：' + err);
+    if (!maybeQuotaExhausted(err)) setStatus('翻译失败：' + err);
   } finally {
     if (unlisten) unlisten();
   }
@@ -3277,8 +3424,14 @@ function makeDialogDraggable(dialog, handle) {
 
 async function openSettings() {
   const cfg = await invoke('get_config');
-  $('cfg-base-url').value = cfg.translate.base_url || 'https://api.deepseek.com/v1';
-  $('cfg-api-key').value = cfg.translate.api_key;
+  // API Base URL：默认（作者中转，不显示具体字符串，也隐藏 API Key）/ 自定义（用户自己填）。
+  const baseUrl = (cfg.translate && cfg.translate.base_url) || '';
+  const baseIsDefault = !baseUrl || baseUrl === DEFAULT_BASE_URL;
+  $('cfg-base-url-mode').value = baseIsDefault ? 'default' : 'custom';
+  $('cfg-base-url').value = baseIsDefault ? '' : baseUrl;
+  // 默认态不展示作者 key（清空，切自定义后由用户自己填）；自定义才回填。
+  $('cfg-api-key').value = baseIsDefault ? '' : (cfg.translate.api_key || '');
+  updateBaseUrlVisibility();
   $('cfg-model').value = cfg.translate.model || 'deepseek-v4-flash';
   $('cfg-target-lang').value = cfg.translate.target_lang;
   const orient = (cfg.viewer && cfg.viewer.orientation) || 'auto';
@@ -3290,34 +3443,43 @@ async function openSettings() {
   $('cfg-word-model').value = w.model || '';
   $('cfg-word-format').value = (w.formula_format === 'mathtype') ? 'mathtype' : 'omml';
   const o = cfg.ocr || {};
-  // 统一识别引擎：local / llm / glm，公式识别与文字提取共用，以 ocr.mode 为准，默认 glm。
-  $('cfg-engine').value = (o.mode === 'local' || o.mode === 'llm' || o.mode === 'glm') ? o.mode : 'glm';
+  // 统一识别引擎：默认（GLM-OCR + 作者 key）/ local / llm / glm，公式识别与文字提取共用。
+  const glmKey = w.glm_api_key || o.glm_api_key || '';
+  let engine = o.mode;
+  // glm + 作者 key（或空 key）视为「默认」；glm + 自己的 key 才是显式 GLM（BYOK）。
+  if (engine === 'glm' && (!glmKey || glmKey === DEFAULT_GLM_KEY)) engine = 'default';
+  if (engine !== 'default' && engine !== 'local' && engine !== 'llm' && engine !== 'glm') engine = 'default';
+  $('cfg-engine').value = engine;
   $('cfg-ocr-lang').value = o.lang || 'auto';
   $('cfg-ocr-model').value = o.model || '';
   $('cfg-ocr-detail').value = (o.detail === 'high' || o.detail === 'low') ? o.detail : 'auto';
-  // GLM-OCR 的 Key 在「公式识别」与「文字提取」之间共用，取任一非空值回填。
-  $('cfg-glm-key').value = w.glm_api_key || o.glm_api_key || '';
+  // GLM-OCR 的 Key 在「公式识别」与「文字提取」之间共用；默认态清空（用作者 key），其余回填已存 key。
+  $('cfg-glm-key').value = (engine === 'default') ? '' : glmKey;
   updateEngineVisibility();
   await refreshLicenseStatus(); // 刷新 Pro 状态显示
+  await refreshQuotaStatus(); // 刷新试用额度显示
   switchSettingsTab('model'); // 每次打开回到「模型配置」
   $('settings').showModal();
 }
 
 async function saveConfig() {
   try {
-    const sharedGlmKey = $('cfg-glm-key').value.trim();
+    const baseIsCustom = $('cfg-base-url-mode').value === 'custom';
+    const engine = $('cfg-engine').value;   // default / local / llm / glm
+    // 「默认」= 作者中转（翻译）或 作者 GLM-OCR（识别），key 由前端回写作者默认值、UI 不展示。
+    const sharedGlmKey = engine === 'default' ? DEFAULT_GLM_KEY : $('cfg-glm-key').value.trim();
     await invoke('set_config', {
       config: {
         translate: {
           provider: 'openai-compatible',
-          base_url: $('cfg-base-url').value.trim(),
-          api_key: $('cfg-api-key').value.trim(),
+          base_url: baseIsCustom ? $('cfg-base-url').value.trim() : DEFAULT_BASE_URL,
+          api_key: baseIsCustom ? $('cfg-api-key').value.trim() : DEFAULT_API_KEY,
           model: $('cfg-model').value.trim(),
           source_lang: 'auto',
           target_lang: $('cfg-target-lang').value.trim() || '中文',
         },
         ocr: {
-          mode: $('cfg-engine').value || 'glm',
+          mode: engine === 'default' ? 'glm' : (engine || 'glm'),
           model: $('cfg-ocr-model').value.trim(),
           detail: $('cfg-ocr-detail').value || 'auto',
           glm_api_key: sharedGlmKey,   // 与 word.glm_api_key 共用同一把 GLM-OCR Key
@@ -3364,18 +3526,25 @@ async function saveConfig() {
 
 // 「OCR 模型」设置：按统一识别引擎动态显示 / 隐藏 API 字段，避免无关配置干扰。
 function updateEngineVisibility() {
-  const eng = $('cfg-engine').value;   // local / llm / glm
+  const eng = $('cfg-engine').value;   // default / local / llm / glm
   const isLocal = eng === 'local';
   const isLlm = eng === 'llm';
-  const isGlm = eng === 'glm';
+  const isGlm = eng === 'glm';          // 显式 GLM = BYOK；「默认」不展示 key
   $('vlm-fields').classList.toggle('hidden', !isLlm);          // VLM 仅大模型
-  $('glm-fields').classList.toggle('hidden', !isGlm);          // GLM Key 仅 GLM
+  $('glm-fields').classList.toggle('hidden', !isGlm);          // GLM Key 仅显式 GLM
   $('cfg-ocr-lang-row').classList.toggle('hidden', !isLocal);  // 本地 OCR 语言
   $('cfg-ocr-model-row').classList.toggle('hidden', !isLlm);   // 大模型模型名
   $('cfg-ocr-detail-row').classList.toggle('hidden', !isLlm);  // 大模型清晰度
-  // GLM 未填 Key 时提示去获取，或改选本地（离线、精度较低）。
+  // 显式 GLM 未填 Key 时提示去获取，或改选本地（离线、精度较低）。
   const glmKeyEmpty = !($('cfg-glm-key').value || '').trim();
   $('glm-key-hint').classList.toggle('hidden', !(isGlm && glmKeyEmpty));
+}
+
+// 「API Base URL」设置：默认（作者中转）不显示 URL 与 API Key，自定义才显示输入框。
+function updateBaseUrlVisibility() {
+  const isCustom = $('cfg-base-url-mode').value === 'custom';
+  $('cfg-base-url-row').classList.toggle('hidden', !isCustom);  // 自定义才显示 URL 输入框
+  $('cfg-api-key-row').classList.toggle('hidden', !isCustom);   // 默认隐藏 API Key（走作者 token）
 }
 
 // 悬浮翻译栏是否生效：竖排 + 顶部/双栏目录（目录与翻译栏均为浮层）；左侧目录与横排保持原布局。
@@ -3914,18 +4083,26 @@ function bindEvents() {
   });
   $('cfg-engine').addEventListener('change', updateEngineVisibility);
   $('cfg-glm-key').addEventListener('input', updateEngineVisibility);
+  $('cfg-base-url-mode').addEventListener('change', updateBaseUrlVisibility);
   $('extract-pages-form').addEventListener('submit', (e) => { e.preventDefault(); exportPagesToPdf(); });
   $('btn-cancel-extract').addEventListener('click', closeExtractPages);
   $('activate-form').addEventListener('submit', (e) => { e.preventDefault(); submitActivate(); });
   $('btn-cancel-activate').addEventListener('click', () => $('activate').close());
   $('btn-no-key-close').addEventListener('click', closeNoKeyDialog);
   $('btn-no-key-settings').addEventListener('click', noKeyOpenSettings);
+  $('btn-local-ocr-close').addEventListener('click', closeLocalOcrHint);
+  $('btn-local-ocr-settings').addEventListener('click', localOcrOpenSettings);
   $('btn-activate').addEventListener('click', async () => {
     const code = $('license-code').value.trim();
     if (!code) { setStatus('请输入激活码'); return; }
     await activateLicense(code);
   });
   $('btn-manual').addEventListener('click', openManual);
+  $('btn-quota').addEventListener('click', refreshQuotaStatus);
+  $('btn-copy-account').addEventListener('click', copyAccountNo);
+  $('btn-quota-activate').addEventListener('click', quotaOpenActivate);
+  $('btn-quota-settings').addEventListener('click', quotaOpenSettings);
+  $('btn-quota-close').addEventListener('click', closeQuotaEmpty);
 
   // Ctrl + 滚轮缩放（passive: false 才能 preventDefault 阻止页面滚动）。
   // 用 rAF 把快速连续滚动合并成一次缩放，并记录鼠标位置以便缩放时跟随鼠标。
@@ -4247,4 +4424,5 @@ bindEvents();
 initMaterialRipple();
 initToolbarOverflow();
 refreshLicenseStatus(); // 启动时拉取授权状态，填充 Pro 角标/锁
+refreshQuotaStatus(); // 启动时拉取试用额度（首次自动注册机器绑定 key）
 showShelf();

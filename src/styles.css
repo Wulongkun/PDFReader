@@ -1260,6 +1260,8 @@ main.view-in {
 }
 .license-box .h3-label .icon { width: 14px; height: 14px; color: var(--accent); }
 .license-status { font-size: 12px; color: var(--text-muted); margin: 0; }
+.license-status.low { color: #f59e0b; }   /* 额度即将用完 */
+.license-status.warn { color: #ef4444; }  /* 额度已用完 */
 .license-row { display: flex; gap: 8px; }
 .license-row input { flex: 1; }
 .license-row .btn { flex: none; }
@@ -1330,13 +1332,11 @@ main.view-in {
   color: #64748b;
   margin-top: 2px;
 }
-/* 按引擎类型动态显示 / 隐藏的 API 字段块，左侧竖线收拢成一组。 */
+/* 按引擎类型动态显示 / 隐藏的 API 字段块。 */
 .engine-sub {
   display: flex;
   flex-direction: column;
   gap: 11px;
-  padding-left: 12px;
-  border-left: 2px solid var(--border);
 }
 .engine-sub.hidden { display: none; }
 /* 「OCR 模型」等按 OCR 方式动态显示 / 隐藏的字段行。 */
