@@ -17,11 +17,13 @@ import secrets
 import base64
 import json
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 
 import psycopg2
 import psycopg2.extras
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -32,6 +34,15 @@ if not DATABASE_URL:
 GRANTED = int(os.environ.get("TRIAL_GRANTED", "50"))
 PRO_GRANT = int(os.environ.get("PRO_GRANT", "1000"))
 TOPUP_SECRET = os.environ.get("TOPUP_SECRET", "")
+
+# 下载页计数：允许统计的安装包文件名（白名单，防滥用），以及下载文件所在的公开目录。
+DOWNLOAD_BASE_URL = os.environ.get("DOWNLOAD_BASE_URL", "http://yuanjingzh.cn/app")
+DOWNLOAD_FILES = {
+    "PDFReader-联网版-x64.zip",
+    "PDFReader-联网版-x86.zip",
+    "PDFReader-自包含版-x64.zip",
+    "PDFReader-自包含版-x86.zip",
+}
 
 # 激活票据公钥（与 App 端 license.rs 的 PUBLIC_KEY_HEX 一致，只验签、无私钥）。
 PUBLIC_KEY_HEX = "5051895d69d78206bfb79b0bd92a7fe1ba815ef2eee57a9b9b39eaf541674751"
@@ -104,6 +115,14 @@ def _init_schema():
             cur.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS trial_accounts_account_no_key "
                 "ON trial_accounts (account_no)"
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS download_counts (
+                    filename text PRIMARY KEY,
+                    count    int  NOT NULL DEFAULT 0
+                )
+                """
             )
         c.commit()
     _backfill_account_no()
@@ -327,3 +346,33 @@ def admin_accounts(x_topup_secret: str = Header(default="")):
         for r in rows
     ]
     return {"accounts": accounts, "total": len(accounts)}
+
+
+@app.get("/download/{filename}")
+def download(filename: str):
+    """下载计数：命中白名单则 +1 并 302 到真实文件（nginx 静态目录）。"""
+    if filename not in DOWNLOAD_FILES:
+        raise HTTPException(404, "文件不存在")
+    with _conn() as c:
+        with c.cursor() as cur:
+            cur.execute(
+                "INSERT INTO download_counts (filename, count) VALUES (%s, 1) "
+                "ON CONFLICT (filename) DO UPDATE SET count = download_counts.count + 1",
+                (filename,),
+            )
+        c.commit()
+    return RedirectResponse(url=f"{DOWNLOAD_BASE_URL}/{quote(filename)}", status_code=302)
+
+
+@app.get("/downloads")
+def downloads():
+    """下载页读取各安装包的下载次数（公开，无鉴权）。"""
+    with _conn() as c:
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT filename, count FROM download_counts")
+            rows = cur.fetchall()
+        c.commit()
+    counts = {r["filename"]: r["count"] for r in rows}
+    for f in DOWNLOAD_FILES:
+        counts.setdefault(f, 0)
+    return {"counts": counts}
