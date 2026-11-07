@@ -13,10 +13,8 @@ use crate::{
     app::AppState,
     config::Config,
     library::{self, Library},
-    license,
     pdf::{extract, ocr, reader},
     translate::{ExtractedPage, TranslateRequest, TranslateResult},
-    trial,
 };
 
 /// `open_pdf` 的返回值：文件路径 + 名称。字节由前端随后调用 [`read_pdf`] 按需读取。
@@ -443,7 +441,7 @@ pub fn save_ocr_raw(text: String) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// 用系统默认浏览器打开外部链接（激活码获取页 / QQ 群等）。仅允许 http/https。
+/// 用系统默认浏览器打开外部链接（用户手册 / QQ 群等）。仅允许 http/https。
 #[tauri::command]
 pub fn open_external(url: String) -> Result<(), String> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
@@ -478,14 +476,13 @@ pub async fn translate(
     request: TranslateRequest,
 ) -> Result<TranslateResult, String> {
     // 先把需要的数据 clone 出来，避免跨 await 持有锁。
-    let (cfg, translator, charge) = {
+    let cfg = {
         let guard = state.config.lock().map_err(|e| e.to_string())?;
-        let charge = trial::should_charge_translate(&guard);
-        (guard.translate.clone(), state.translator.clone(), charge)
+        guard.translate.clone()
     };
-    charge_trial_page(&state, charge).await?;
 
-    translator
+    state
+        .translator
         .translate(&request, &cfg)
         .await
         .map_err(|e| e.to_string())
@@ -499,14 +496,13 @@ pub async fn translate_stream(
     state: State<'_, AppState>,
     request: TranslateRequest,
 ) -> Result<TranslateResult, String> {
-    let (cfg, translator, charge) = {
+    let cfg = {
         let guard = state.config.lock().map_err(|e| e.to_string())?;
-        let charge = trial::should_charge_translate(&guard);
-        (guard.translate.clone(), state.translator.clone(), charge)
+        guard.translate.clone()
     };
-    charge_trial_page(&state, charge).await?;
 
-    let text = translator
+    let text = state
+        .translator
         .stream_translate(&request, &cfg, |delta| {
             let _ = app.emit("translate-chunk", delta.to_string());
         })
@@ -527,226 +523,10 @@ pub fn get_config(state: State<'_, AppState>) -> Result<Config, String> {
 
 /// 保存配置到本地，并更新内存中的状态。
 #[tauri::command]
-pub fn set_config(state: State<'_, AppState>, mut config: Config) -> Result<(), String> {
-    // 授权信息由激活流程单独写入，设置对话框只管模型/OCR/排版；整体替换前保留已激活票据，
-    // 避免用户改个模型或排版方向就把 Pro 激活给抹掉。
-    let mut guard = state.config.lock().map_err(|e| e.to_string())?;
-    config.license = guard.license.clone();
+pub fn set_config(state: State<'_, AppState>, config: Config) -> Result<(), String> {
     config.save().map_err(|e| e.to_string())?;
-    *guard = config;
+    *state.config.lock().map_err(|e| e.to_string())? = config;
     Ok(())
-}
-
-/// 授权状态：前端据此显示「免费 / Pro」与激活提示。
-#[derive(serde::Serialize)]
-pub struct LicenseStatus {
-    pub pro: bool,
-    pub edition: String,
-    pub activated_at: Option<i64>,
-    pub message: String,
-}
-
-/// 返回当前授权状态（全离线：本地验票据签名 + 核对机器指纹）。
-#[tauri::command]
-pub fn get_license_status(state: State<'_, AppState>) -> Result<LicenseStatus, String> {
-    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
-    let mid = license::machine_id().unwrap_or_default();
-    if config.license.receipt.trim().is_empty() {
-        return Ok(LicenseStatus {
-            pro: false,
-            edition: "free".to_string(),
-            activated_at: None,
-            message: "免费版：导出 Word / 文本 / 译文需激活 Pro".to_string(),
-        });
-    }
-    match license::verify_receipt(&config.license.receipt, &mid) {
-        Ok(p) => Ok(LicenseStatus {
-            pro: true,
-            edition: p.edition,
-            activated_at: Some(p.activated_at),
-            message: "已激活 Pro".to_string(),
-        }),
-        Err(e) => Ok(LicenseStatus {
-            pro: false,
-            edition: "free".to_string(),
-            activated_at: None,
-            message: format!("授权无效：{e}"),
-        }),
-    }
-}
-
-/// 用激活码在线激活：本地预检 → Worker 验签 + 判窗口 → 存票据。
-#[tauri::command]
-pub async fn activate_license(
-    state: State<'_, AppState>,
-    code: String,
-) -> Result<LicenseStatus, String> {
-    // 本地先验格式，明显打错就不浪费一次网络请求（真伪由 Worker 判）。
-    license::validate_code(&code)?;
-    let mid = license::machine_id()?;
-    let receipt = license::activate_online(&code, &mid).await?;
-    // Worker 返回的票据必须验签通过且绑定本机，才落盘。
-    let payload = license::verify_receipt(&receipt, &mid)?;
-
-    let receipt_for_quota = receipt.clone();
-    {
-        let mut guard = state.config.lock().map_err(|e| e.to_string())?;
-        guard.license.code = code;
-        guard.license.receipt = receipt;
-        guard.license.machine_id = mid;
-        guard.save().map_err(|e| e.to_string())?;
-    }
-
-    // 激活成功后把 Pro 的固定赠送页数写到额度服务（best-effort：服务不可达不阻断激活，
-    // 下次使用 AI 时额度仍按试用 50 页计，可稍后重试）。
-    if let Ok((machine_id, key)) = ensure_trial_key(&state).await {
-        if let Err(e) = trial::activate_pro(&machine_id, &key, &receipt_for_quota).await {
-            append_log(&format!("Pro 额度授予失败（可稍后重试）：{e}"));
-        }
-    }
-
-    Ok(LicenseStatus {
-        pro: true,
-        edition: payload.edition,
-        activated_at: Some(payload.activated_at),
-        message: "已激活 Pro".to_string(),
-    })
-}
-
-/// Pro 门控：导出类命令在入口处调用，未激活直接拒绝。
-fn require_pro(state: &State<'_, AppState>) -> Result<(), String> {
-    let config = state.config.lock().map_err(|e| e.to_string())?;
-    if license::is_pro(&config) {
-        Ok(())
-    } else {
-        Err("本功能为 Pro 版专属，请先在设置中激活".to_string())
-    }
-}
-
-/// 返回 `(machine_id, trial_key)`；trial_key 为空时首次调用额度服务注册并落盘。
-///
-/// 不跨 await 持有 config 锁（std::sync::Mutex 的 guard 不 Send）；register 在服务端
-/// 幂等（同 machine_id 返回同 key），并发重复注册只多一次网络请求、无副作用。
-async fn ensure_trial_key(state: &State<'_, AppState>) -> Result<(String, String), String> {
-    let mid = license::machine_id()?;
-    {
-        let guard = state.config.lock().map_err(|e| e.to_string())?;
-        if !guard.license.trial_key.trim().is_empty() {
-            return Ok((mid, guard.license.trial_key.clone()));
-        }
-    }
-    let key = trial::register(&mid).await?.trial_key;
-    let mut guard = state.config.lock().map_err(|e| e.to_string())?;
-    if guard.license.trial_key.trim().is_empty() {
-        guard.license.trial_key = key;
-        guard.save().map_err(|e| e.to_string())?;
-    }
-    Ok((mid, guard.license.trial_key.clone()))
-}
-
-/// 本次 AI 调用若走作者中转（试用），扣 1 页额度。扣费失败返回明确中文错误。
-async fn charge_trial_page(state: &State<'_, AppState>, charge: bool) -> Result<(), String> {
-    if !charge {
-        return Ok(());
-    }
-    let (mid, key) = ensure_trial_key(state).await?;
-    trial::consume(&mid, &key, 1).await.map(|_| ())
-}
-
-/// 扣 N 页额度（导出等整份处理的场景）。扣费失败返回明确中文错误。
-async fn charge_trial_pages(state: &State<'_, AppState>, pages: u32) -> Result<(), String> {
-    if pages == 0 {
-        return Ok(());
-    }
-    let (mid, key) = ensure_trial_key(state).await?;
-    trial::consume(&mid, &key, pages).await.map(|_| ())
-}
-
-/// 计算本次导出要处理的页数（计费用）：`pages` 为 None/空 = 全文，否则解析
-/// 「1-5,8,10-12」紧凑页码范围并夹取到 1..=total。
-fn count_export_pages(path: &str, pages: &Option<String>) -> Result<u32, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("读取文件失败：{e}"))?;
-    let doc = lopdf::Document::load_mem(&bytes).map_err(|e| format!("解析 PDF 失败：{e}"))?;
-    let total = doc.get_pages().len() as u32;
-    let Some(spec) = pages.as_deref() else {
-        return Ok(total);
-    };
-    let spec = spec.trim();
-    if spec.is_empty() {
-        return Ok(total);
-    }
-    let mut set = std::collections::BTreeSet::new();
-    for part in spec.split(',') {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        if let Some((a, b)) = part.split_once('-') {
-            let a: u32 = a.trim().parse().map_err(|_| format!("页码解析失败：{part}"))?;
-            let b: u32 = b.trim().parse().map_err(|_| format!("页码解析失败：{part}"))?;
-            for p in a.min(b)..=a.max(b) {
-                if (1..=total).contains(&p) {
-                    set.insert(p);
-                }
-            }
-        } else {
-            let p: u32 = part.parse().map_err(|_| format!("页码解析失败：{part}"))?;
-            if (1..=total).contains(&p) {
-                set.insert(p);
-            }
-        }
-    }
-    Ok(set.len() as u32)
-}
-
-/// 额度状态：前端据此显示「剩余额度」（试用与 Pro 统一，走作者 key 即按页计费）。
-#[derive(serde::Serialize)]
-pub struct QuotaStatus {
-    /// 是否处于按页计费模式（用作者 key；试用与 Pro 都可能）。
-    pub metered: bool,
-    /// 是否已注册额度 key（首次调用 /register 后才为 true）。
-    pub registered: bool,
-    pub granted: u32,
-    pub used: u32,
-    pub remaining: u32,
-    /// 6 位识别号（充值用，绑定本机）。
-    pub account_no: Option<u32>,
-    pub message: String,
-}
-
-/// 查询额度：BYOK（用自有 key）返回「不限额度」，否则向额度服务拉取剩余页数。
-#[tauri::command]
-pub async fn get_quota_status(state: State<'_, AppState>) -> Result<QuotaStatus, String> {
-    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
-    if !trial::is_metered(&config) {
-        return Ok(QuotaStatus {
-            metered: false,
-            registered: false,
-            granted: 0,
-            used: 0,
-            remaining: 0,
-            account_no: None,
-            message: "使用自有 API Key，不限额度".to_string(),
-        });
-    }
-    // 用作者 key（试用或 Pro）：确保已注册（首次自动签发），再拉额度。
-    let (mid, key) = ensure_trial_key(&state).await?;
-    let info = trial::status(&mid, &key).await?;
-    Ok(QuotaStatus {
-        metered: true,
-        registered: true,
-        granted: info.granted,
-        used: info.used,
-        remaining: info.remaining,
-        account_no: info.account_no,
-        message: format!("剩余额度：{} / {} 页", info.remaining, info.granted),
-    })
-}
-
-/// 返回本机机器码（Windows MachineGuid），用户充值/联系作者时复制发给作者用。
-#[tauri::command]
-pub fn get_machine_id() -> Result<String, String> {
-    license::machine_id()
 }
 
 /// `ocr_image` 的参数：一张页面的 PNG data URL。
@@ -762,17 +542,10 @@ pub async fn ocr_image(
     state: State<'_, AppState>,
     request: OcrRequest,
 ) -> Result<ocr::OcrPageResult, String> {
-    let (cfg, translator, charge) = {
+    let (cfg, translator) = {
         let guard = state.config.lock().map_err(|e| e.to_string())?;
-        let charge = match guard.ocr.mode.as_str() {
-            "glm" => trial::should_charge_glm(&guard),
-            "llm" => trial::should_charge_translate(&guard),
-            _ => false,
-        };
-        (guard.clone(), state.translator.clone(), charge)
+        (guard.clone(), state.translator.clone())
     };
-    // 走作者中转（试用）才计费；本地 OCR 零成本、不计费。
-    charge_trial_page(&state, charge).await?;
 
     // 记录实际分派的 OCR 方式，便于核对「到底走的是 GLM 还是本地 OCR」。
     append_log(&format!(
@@ -836,12 +609,10 @@ pub async fn extract_page(
     state: State<'_, AppState>,
     request: ExtractPageRequest,
 ) -> Result<ExtractedPage, String> {
-    let (cfg, translator, charge) = {
+    let (cfg, translator) = {
         let guard = state.config.lock().map_err(|e| e.to_string())?;
-        let charge = trial::should_charge_translate(&guard);
-        (guard.clone(), state.translator.clone(), charge)
+        (guard.clone(), state.translator.clone())
     };
-    charge_trial_page(&state, charge).await?;
     translator
         .extract_page(&request.png_data_url, &cfg)
         .await
@@ -858,10 +629,9 @@ pub struct ExportRequest {
 /// 弹出保存对话框，把文本写入 `.txt` 文件，返回保存路径。
 #[tauri::command]
 pub async fn export_text(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     request: ExportRequest,
 ) -> Result<String, String> {
-    require_pro(&state)?;
     let handle = rfd::AsyncFileDialog::new()
         .add_filter("文本文件", &["txt"])
         .set_file_name(&request.suggested_name)
@@ -935,8 +705,6 @@ pub async fn translate_paragraphs(
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::task::JoinSet;
-
-    require_pro(&state)?;
 
     let (cfg, translator) = {
         let guard = state.config.lock().map_err(|e| e.to_string())?;
@@ -1121,7 +889,7 @@ async fn translate_protecting_math(
 /// 即可在 Word 里双击编辑。
 #[tauri::command]
 pub async fn export_docx(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     request: ExportDocxRequest,
 ) -> Result<String, String> {
     use docx_rs::{
@@ -1129,8 +897,6 @@ pub async fn export_docx(
         TableRow,
     };
     use crate::translate::latex::{self, MathSegment};
-
-    require_pro(&state)?;
 
     let handle = rfd::AsyncFileDialog::new()
         .add_filter("Word 文档", &["docx"])
@@ -1671,7 +1437,6 @@ pub async fn export_word_native(
     suggested_name: String,
     pages: Option<String>,
 ) -> Result<String, String> {
-    require_pro(&state)?;
     if !std::path::Path::new(&path).is_file() {
         return Err("未找到 PDF 文件".to_string());
     }
@@ -1685,11 +1450,6 @@ pub async fn export_word_native(
         .await
         .ok_or_else(|| "已取消导出".to_string())?;
     let out = handle.path().to_path_buf();
-
-    // 计费：按导出页数；仅当导出引擎确为 GLM-OCR 且走作者 key 时才扣额度。
-    if cfg.word_engine() == "glm-ocr" && trial::should_charge_word_glm(&cfg) {
-        charge_trial_pages(&state, count_export_pages(&path, &pages)?).await?;
-    }
 
     // 转换是阻塞子进程（扫描件可能数秒到数分钟），丢到 spawn_blocking 避免卡住 tokio 线程。
     // 逐页进度通过 `export-native-progress` 事件上报，前端状态栏显示「正在导出 X/Y 页」。
@@ -1734,7 +1494,6 @@ pub async fn export_word_translated_native(
     suggested_name: String,
     pages: Option<String>,
 ) -> Result<String, String> {
-    require_pro(&state)?;
     if !std::path::Path::new(&path).is_file() {
         return Err("未找到 PDF 文件".to_string());
     }
@@ -1751,19 +1510,6 @@ pub async fn export_word_translated_native(
         .await
         .ok_or_else(|| "已取消导出".to_string())?;
     let out = handle.path().to_path_buf();
-
-    // 计费：公式/OCR（GLM-OCR 走作者 key）+ 翻译（走作者中转）各按导出页数扣一次。
-    let pages_count = count_export_pages(&path, &pages)?;
-    let mut charge_pages = 0u32;
-    if cfg.word_engine() == "glm-ocr" && trial::should_charge_word_glm(&cfg) {
-        charge_pages += pages_count;
-    }
-    if trial::should_charge_translate(&cfg) {
-        charge_pages += pages_count;
-    }
-    if charge_pages > 0 {
-        charge_trial_pages(&state, charge_pages).await?;
-    }
 
     let path_for_block = path.clone();
     let out_for_block = out.clone();

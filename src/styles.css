@@ -1238,35 +1238,7 @@ main.view-in {
   .toolbar button, .shelf-card, dialog button { transition: none; }
 }
 
-/* ===== 授权（Pro 门控） ===== */
-
-/* 设置里的授权区块。 */
-.license-box {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  background: #f8fafc;
-}
-.license-box .h3-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 700;
-  color: #334155;
-}
-.license-box .h3-label .icon { width: 14px; height: 14px; color: var(--accent); }
-.license-status { font-size: 12px; color: var(--text-muted); margin: 0; }
-.license-status.low { color: #f59e0b; }   /* 额度即将用完 */
-.license-status.warn { color: #ef4444; }  /* 额度已用完 */
-.license-row { display: flex; gap: 8px; }
-.license-row input { flex: 1; }
-.license-row .btn { flex: none; }
-
-/* 设置分页：左侧分类栏 + 右侧内容面板。 */
+/* ===== 设置分页：左侧分类栏 + 右侧内容面板 ===== */
 #settings { width: 660px; }
 .settings-layout {
   display: grid;
@@ -1347,5 +1319,14 @@ main.view-in {
 .about-box .about-ver { font-size: 12px; margin: 0; }
 /* 「配置路径」提示与「用户手册」按钮移到了授权框下方，按钮不随面板拉伸。 */
 .settings-panel[data-panel="about"] > .btn-manual { align-self: flex-start; }
+/* 关于面板里的捐赠 / 加群二维码。 */
+.about-qr-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 2px; }
+.about-qr-card {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: #f8fafc;
+}
+.about-qr-title { font-size: 13px; font-weight: 700; color: #334155; margin: 0; }
+.about-qr { width: 130px; height: auto; border-radius: 6px; background: #fff; }
+.about-qr-caption { font-size: 12px; color: var(--text-muted); margin: 0; }
 
 

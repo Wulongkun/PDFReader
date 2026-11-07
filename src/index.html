@@ -182,8 +182,7 @@
 
           <label>识别引擎
             <select id="cfg-engine">
-              <option value="default" selected title="GLM-OCR">默认</option>
-              <option value="local" title="离线，公式保留为图片">本地</option>
+              <option value="local" selected title="离线，公式保留为图片">本地</option>
               <option value="llm" title="VLM，OpenAI 兼容">大模型</option>
               <option value="glm" title="智谱">GLM-OCR</option>
             </select>
@@ -210,7 +209,7 @@
             <label title="智谱 BigModel">API Key
               <input id="cfg-glm-key" type="password" placeholder="公式识别与文字提取共用" />
             </label>
-            <p id="glm-key-hint" class="hint">未填写 Key 将无法识别。Key获取方式：<a href="http://yuanjingzh.cn/activate/" target="_blank" rel="noopener">http://yuanjingzh.cn/activate/</a>，或改选「本地」引擎（离线、精度较低）。</p>
+            <p id="glm-key-hint" class="hint">未填写 Key 将无法识别。请填写你自己的智谱 BigModel API Key，或改选「本地」引擎（离线、精度较低）。</p>
           </div>
 
           <label id="cfg-ocr-lang-row">OCR 语言
@@ -238,15 +237,9 @@
         <div class="settings-group">
           <span class="settings-group-title">翻译模型</span>
           <label>API Base URL
-            <select id="cfg-base-url-mode">
-              <option value="default">默认</option>
-              <option value="custom">自定义</option>
-            </select>
-          </label>
-          <label id="cfg-base-url-row" class="hidden">自定义 Base URL
             <input id="cfg-base-url" type="url" placeholder="https://api.deepseek.com/v1" />
           </label>
-          <label id="cfg-api-key-row">API Key
+          <label>API Key
             <input id="cfg-api-key" type="password" placeholder="sk-..." />
           </label>
           <label>模型
@@ -279,44 +272,32 @@
                 <p class="about-name">PDFReader</p>
                 <p class="about-ver">版本 0.1.0</p>
               </div>
-              <section class="license-box">
-                <span class="h3-label"><svg class="icon"><use href="#icon-lock"/></svg>Pro 授权</span>
-                <p id="license-status" class="license-status">免费版</p>
-                <p id="quota-status" class="license-status">—</p>
-                <button type="button" id="btn-quota" class="btn">查询额度</button>
-                <div class="license-row">
-                  <span id="account-no" class="license-status" style="flex:1; align-self:center;">识别号：—</span>
-                  <button type="button" id="btn-copy-account" class="btn" disabled>复制识别号</button>
-                </div>
-                <div class="license-row">
-                  <input id="license-code" type="text" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" />
-                  <button type="button" id="btn-activate" class="btn">激活</button>
-                </div>
-                <p class="hint">识别额度：翻译 / 云端 OCR / 版面解析 / 导出按处理页数计费；试用赠送 50 页，激活 Pro（买断）赠送 1000 页，用完可填写自己的 API Key（不占额度）或联系作者充值。导出 Word / 文本 / 译文为 Pro 版专属。激活码获取方式：<a href="http://yuanjingzh.cn/activate/" target="_blank" rel="noopener">http://yuanjingzh.cn/activate/</a>。可加入群组反馈问题，提出改进意见。QQ群号：1121668176。</p>
-              </section>
               <p class="hint">配置保存到 %APPDATA%/PDFReader/config.json</p>
               <button type="button" id="btn-manual" class="btn btn-manual"><svg class="icon"><use href="#icon-book"/></svg>用户手册</button>
+
+              <div class="about-qr-grid">
+                <div class="about-qr-card">
+                  <p class="about-qr-title">支持作者</p>
+                  <img class="about-qr" src="assets/juanzeng.png" alt="捐赠二维码" loading="lazy" />
+                  <p class="about-qr-caption">点杯奶茶、加个鸡腿，感谢支持</p>
+                </div>
+                <div class="about-qr-card">
+                  <p class="about-qr-title">微信群</p>
+                  <img class="about-qr" src="assets/wechat-qr.png" alt="PDFReader 交流群微信群二维码" loading="lazy" />
+                  <p class="about-qr-caption">7 天内有效</p>
+                </div>
+                <div class="about-qr-card">
+                  <p class="about-qr-title">QQ 群</p>
+                  <img class="about-qr" src="assets/qq-qr.png" alt="PDFReader 交流群 QQ 二维码" loading="lazy" />
+                  <p class="about-qr-caption">群号：1121668176</p>
+                </div>
+              </div>
             </section>
           </div>
         </div>
         <footer>
           <button type="submit"><svg class="icon"><use href="#icon-check"/></svg>保存</button>
           <button type="button" id="btn-cancel-cfg"><svg class="icon"><use href="#icon-close"/></svg>取消</button>
-        </footer>
-      </form>
-    </dialog>
-
-    <dialog id="activate">
-      <form id="activate-form">
-        <h2>支持作者开发，激活 Pro 授权</h2>
-        <p class="hint">导出 Word / 文本 / 译文为 Pro 版专属；激活 Pro（买断）赠送 1000 页识别额度，用完可填写自己的 Key 或联系作者充值。可输入激活码并联网激活。激活码获取方式：<a href="http://yuanjingzh.cn/activate/" target="_blank" rel="noopener">http://yuanjingzh.cn/activate/</a>。可加入群组反馈问题，提出改进意见。QQ群号：1121668176。</p>
-        <label>激活码
-          <input id="activate-code" type="text" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" />
-        </label>
-        <p id="activate-msg" class="hint"></p>
-        <footer>
-          <button type="submit"><svg class="icon"><use href="#icon-check"/></svg>激活</button>
-          <button type="button" id="btn-cancel-activate"><svg class="icon"><use href="#icon-close"/></svg>取消</button>
         </footer>
       </form>
     </dialog>
@@ -329,18 +310,6 @@
         <footer>
           <button type="button" id="btn-no-key-settings"><svg class="icon"><use href="#icon-settings"/></svg>打开设置</button>
           <button type="button" id="btn-no-key-close"><svg class="icon"><use href="#icon-close"/></svg>关闭</button>
-        </footer>
-      </form>
-    </dialog>
-
-    <dialog id="quota-empty">
-      <form id="quota-empty-form">
-        <h2>额度已用完</h2>
-        <p class="hint">赠送额度已用完。可填写自己的 API Key（不占作者额度），或联系作者充值；购买激活码激活 Pro 可获赠 1000 页额度。QQ群号：1121668176。</p>
-        <footer>
-          <button type="button" id="btn-quota-activate"><svg class="icon"><use href="#icon-lock"/></svg>购买 / 激活 Pro</button>
-          <button type="button" id="btn-quota-settings"><svg class="icon"><use href="#icon-settings"/></svg>填写自己的 Key</button>
-          <button type="button" id="btn-quota-close"><svg class="icon"><use href="#icon-close"/></svg>关闭</button>
         </footer>
       </form>
     </dialog>

@@ -1,11 +1,9 @@
 mod app;
 mod config;
 mod library;
-mod license;
 mod orientation;
 mod pdf;
 mod translate;
-mod trial;
 mod ui;
 
 use app::AppState;
@@ -41,10 +39,6 @@ pub fn run() {
             ui::commands::translate_stream,
             ui::commands::get_config,
             ui::commands::set_config,
-            ui::commands::activate_license,
-            ui::commands::get_license_status,
-            ui::commands::get_quota_status,
-            ui::commands::get_machine_id,
             ui::commands::ocr_image,
             ui::commands::ocr_image_local,
             ui::commands::extract_page,

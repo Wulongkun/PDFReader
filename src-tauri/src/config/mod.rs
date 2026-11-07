@@ -7,20 +7,6 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-// ===== 作者中转配置（试用期默认走作者自己的额度）=====
-//
-// 试用期用户无需自行申请 key：App 首次运行自动注册机器绑定的试用 key（存 license.trial_key，
-// 对用户不展示字符），免费页数由服务端按页扣减。下面内嵌的 key 可被有技术的人提取后绕过
-// 额度直接使用，因此作者务必在新 API 给对应 token 设月度硬上限兜底，并定期轮换 GLM key。
-
-/// 作者中转（New API）Base URL。
-pub const AUTHOR_RELAY_BASE_URL: &str = "http://yuanjingzh.cn:3000/v1";
-/// 作者中转 token（New API 的完整 token，`sk-` 开头）。
-pub const AUTHOR_RELAY_TOKEN: &str = "sk-d63baa41de3d4cc2c87d8c6133fa3c7aedd6de6654c08232";
-/// 作者智谱 GLM key（试用期 GLM-OCR 直连 open.bigmodel.cn 用）。
-/// 填上作者的 GLM key 后，试用期 GLM-OCR 才可用；留空则 GLM 不计费（本来也用不了）。
-pub const AUTHOR_GLM_KEY: &str = "22508a51674a46a8be282735bd4ae60c.dFqklAOSCD2Ssgp6";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -28,7 +14,6 @@ pub struct Config {
     pub ocr: OcrConfig,
     pub viewer: ViewerConfig,
     pub word: NativeWordConfig,
-    pub license: LicenseConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,19 +72,6 @@ pub struct NativeWordConfig {
     pub formula_format: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LicenseConfig {
-    /// 用户输入的激活码（仅回填展示用，真正的授权凭据是 `receipt`）。
-    pub code: String,
-    /// Worker 签发的激活票据（base64url 编码的 `payload ‖ 签名`）。
-    pub receipt: String,
-    /// 激活时绑定的机器指纹（Windows MachineGuid）。
-    pub machine_id: String,
-    /// 试用额度 key（机器绑定，额度服务签发；具体字符不对用户展示，仅供额度校验）。
-    pub trial_key: String,
-}
-
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -107,7 +79,6 @@ impl Default for Config {
             ocr: OcrConfig::default(),
             viewer: ViewerConfig::default(),
             word: NativeWordConfig::default(),
-            license: LicenseConfig::default(),
         }
     }
 }
@@ -124,26 +95,14 @@ impl Config {
     }
 }
 
-impl Default for LicenseConfig {
-    fn default() -> Self {
-        Self {
-            code: String::new(),
-            receipt: String::new(),
-            machine_id: String::new(),
-            trial_key: String::new(),
-        }
-    }
-}
-
 impl Default for OcrConfig {
     fn default() -> Self {
         Self {
-            // 默认在线识别（GLM-OCR 版面解析），走作者 GLM key（试用按页计费）；本地 OCR 为离线免费备选。
+            // 默认在线识别（GLM-OCR 版面解析），需用户自行填写智谱 API Key；本地 OCR 为离线免费备选。
             mode: "glm".to_string(),
             model: String::new(),
             detail: "auto".to_string(),
-            // 试用期默认内嵌作者 GLM key：切到 GLM-OCR 即可直接用（换成自己的 key 即 BYOK）。
-            glm_api_key: AUTHOR_GLM_KEY.to_string(),
+            glm_api_key: String::new(),
             lang: "auto".to_string(),
         }
     }
@@ -161,8 +120,7 @@ impl Default for NativeWordConfig {
             api_base: String::new(),
             api_key: String::new(),
             model: String::new(),
-            // 默认内嵌作者 GLM key：Pro 导出 GLM-OCR 公式识别开箱即用（走作者额度，按页计费）。
-            glm_api_key: AUTHOR_GLM_KEY.to_string(),
+            glm_api_key: String::new(),
             formula_format: "omml".to_string(),
         }
     }
@@ -172,9 +130,8 @@ impl Default for TranslateConfig {
     fn default() -> Self {
         Self {
             provider: "openai-compatible".to_string(),
-            // 试用期默认走作者中转（New API），用户换成自己的 key 即为 BYOK、不再计费。
-            base_url: AUTHOR_RELAY_BASE_URL.to_string(),
-            api_key: AUTHOR_RELAY_TOKEN.to_string(),
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            api_key: String::new(),
             model: "deepseek-v4-flash".to_string(),
             source_lang: "auto".to_string(),
             target_lang: "中文".to_string(),
@@ -196,23 +153,8 @@ impl Config {
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("读取配置文件失败：{}", path.display()))?;
-        let mut cfg: Self = serde_json::from_str(&text)
+        let cfg: Self = serde_json::from_str(&text)
             .with_context(|| format!("解析配置文件失败：{}", path.display()))?;
-        // 迁移：老版本默认「空 key + deepseek 直连」；试用期空 key 视为「未配置 → 用作者中转」。
-        // 只在用户从未改动默认值（key 空、且 base_url 仍是老默认）时才迁移，避免覆盖用户自定义。
-        if cfg.translate.api_key.trim().is_empty()
-            && cfg.translate.base_url.trim() == "https://api.deepseek.com/v1"
-        {
-            cfg.translate.api_key = AUTHOR_RELAY_TOKEN.to_string();
-            cfg.translate.base_url = AUTHOR_RELAY_BASE_URL.to_string();
-        }
-        // 迁移：老配置 GLM key 为空 → 填入作者 key，使试用期 GLM-OCR 开箱即用（切到 glm 即可）。
-        if cfg.ocr.glm_api_key.trim().is_empty() {
-            cfg.ocr.glm_api_key = AUTHOR_GLM_KEY.to_string();
-        }
-        if cfg.word.glm_api_key.trim().is_empty() {
-            cfg.word.glm_api_key = AUTHOR_GLM_KEY.to_string();
-        }
         Ok(cfg)
     }
 
